@@ -42,7 +42,7 @@
   },
   "homepage": "https://github.com/wyre-technology/connectwise-automate-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.3"
+    "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "peerDependencies": {
     "@wyre-technology/node-connectwise-automate": "^1.0.0"
