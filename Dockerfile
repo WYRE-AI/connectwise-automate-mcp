@@ -1,4 +1,4 @@
-FROM node:22-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /app
 COPY package*.json .npmrc ./
 ARG GITHUB_TOKEN
@@ -9,7 +9,7 @@ RUN echo "@wyre-technology:registry=https://npm.pkg.github.com" > .npmrc && \
 COPY . .
 RUN npm run build
 
-FROM node:22-alpine AS runner
+FROM node:26-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 RUN addgroup --system --gid 1001 nodejs && \
