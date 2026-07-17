@@ -37,6 +37,7 @@ A Model Context Protocol (MCP) server for ConnectWise Automate with decision tre
 - **Decision Tree Architecture**: Navigate between domains (computers, clients, alerts, scripts) to access relevant tools
 - **Lazy Loading**: Client initialization and domain handlers are loaded on demand
 - **Comprehensive API Coverage**: Manage computers, clients, alerts, and scripts
+- **Interactive Device Card (MCP Apps)**: `cwautomate_computers_get` renders as a read-only interactive card in MCP Apps hosts (Claude Desktop/web); neutral by default, brandable via `window.__BRAND__` injection or `MCP_BRAND_*` env vars; plain-JSON behavior is unchanged in other hosts
 
 ## Installation
 

@@ -28,6 +28,7 @@ import {
   type CWAutomateCredentials,
 } from "./utils/client.js";
 import { setServerRef } from "./utils/server-ref.js";
+import { registerResourceHandlers } from "./resources.js";
 
 export type { CWAutomateCredentials };
 
@@ -182,11 +183,13 @@ export function createMcpServer(
     {
       capabilities: {
         tools: {},
+        resources: {},
       },
     }
   );
 
   setServerRef(server);
+  registerResourceHandlers(server);
 
   /**
    * Handle ListTools requests - always returns ALL tools

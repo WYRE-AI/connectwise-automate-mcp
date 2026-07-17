@@ -11,6 +11,7 @@ import { getClient } from "../utils/client.js";
 import { elicitText } from "../utils/elicitation.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
+import { buildDeviceCard, DEVICE_CARD_META } from "../card.builder.js";
 
 /**
  * Escape single quotes for an OData-style condition string value.
@@ -58,6 +59,7 @@ function getTools(): Tool[] {
     {
       name: "cwautomate_computers_get",
       description: "Get details for a specific computer by its ID",
+      _meta: DEVICE_CARD_META,
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -188,7 +190,18 @@ async function handleCall(
       const computerId = args.computer_id as number;
       const computer = await client.computers.get(computerId);
 
-      return jsonResult(computer);
+      // MCP Apps: attach the normalized card payload the ui:// device card
+      // renders from. Best-effort — any failure just means no UI surface,
+      // never a failed tool result.
+      const payload: Record<string, unknown> = { ...computer };
+      try {
+        const card = await buildDeviceCard(payload, client);
+        if (card) payload._card = card;
+      } catch {
+        // Card building is progressive enhancement only.
+      }
+
+      return jsonResult(payload);
     }
 
     case "cwautomate_computers_search": {
