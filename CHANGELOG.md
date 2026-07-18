@@ -8,6 +8,9 @@
 
 ### Fixed
 
+- **All API-backed tools returned `{}` and then failed with "Body is unusable: Body has already been read"** ([#54](https://github.com/wyre-technology/connectwise-automate-mcp/issues/54)). Root cause was in the client library's HTTP layer: the error path consumed the response body twice, and a 200 with a non-JSON body (hosted-Automate WAF/proxy pages) was silently returned as an empty object. Fixed in `@wyre-technology/node-connectwise-automate` v1.0.4 ([node-connectwise-automate#54](https://github.com/wyre-technology/node-connectwise-automate/pull/54)): bodies are read exactly once, JSON parses regardless of a mislabeled content-type header, and a non-JSON 200 raises a descriptive error carrying the content-type and a body snippet instead of masquerading as an empty success.
+- **The client library was not declared as a dependency.** `package.json` listed only `@modelcontextprotocol/sdk` while the code dynamically imports `@wyre-technology/node-connectwise-automate` at runtime (an orphaned lockfile entry masked this locally). Now declared explicitly at `^1.0.4`, so `npx`/fresh installs always resolve the client — and always get the fixed HTTP layer.
+
 - **Deploy buttons:** authenticate against the GitHub Packages npm registry during
   one-click cloud builds. The `@wyre-technology/node-connectwise-automate` dependency
   lives on GitHub Packages, which has no anonymous read, so `npm install` failed with
