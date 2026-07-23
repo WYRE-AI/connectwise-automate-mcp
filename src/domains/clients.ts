@@ -6,7 +6,7 @@
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { DomainHandler, CallToolResult } from "../utils/types.js";
-import { getClient } from "../utils/client.js";
+import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult, listItems } from "../utils/results.js";
 
@@ -131,9 +131,10 @@ function getTools(): Tool[] {
  */
 async function handleCall(
   toolName: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  creds?: CWAutomateCredentials
 ): Promise<CallToolResult> {
-  const client = await getClient();
+  const client = await getClient(creds);
 
   switch (toolName) {
     case "cwautomate_clients_list": {

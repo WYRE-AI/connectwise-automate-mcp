@@ -1,13 +1,17 @@
 /**
- * Lazy-loaded ConnectWise Automate client
+ * ConnectWise Automate client factory — request-scoped, no global singleton.
  *
- * This module provides lazy initialization of the ConnectWise Automate client
- * to avoid loading the entire library upfront.
+ * Credentials are resolved per-call in priority order:
+ *   1. An explicit CWAutomateCredentials object (gateway / request-scoped)
+ *   2. process.env CW_AUTOMATE_* vars (stdio / single-tenant env mode)
+ *
+ * process.env is never mutated by request handlers; callers pass credentials
+ * directly to getClient() so concurrent requests cannot contaminate each other.
  */
 
-import type {
+import {
   ConnectWiseAutomateClient,
-  ConnectWiseAutomateConfig,
+  type ConnectWiseAutomateConfig,
 } from "@wyre-technology/node-connectwise-automate";
 
 /**
@@ -31,18 +35,10 @@ export interface CWAutomateCredentials {
   authMethod?: CWAutomateAuthMethod;
 }
 
-let _client: ConnectWiseAutomateClient | null = null;
-let _credentials: CWAutomateCredentials | null = null;
-
 /**
- * Per-request client override for gateway mode.
- * Set before handling a tool call and cleared afterward to ensure
- * request-level isolation without mutating process.env.
- */
-let _clientOverride: ConnectWiseAutomateClient | null = null;
-
-/**
- * Get credentials from environment variables
+ * Get credentials from environment variables.
+ * Used by stdio / single-tenant deployments; never called during gateway
+ * requests that supply explicit credentials to getClient().
  */
 export function getCredentials(): CWAutomateCredentials | null {
   const serverUrl = process.env.CW_AUTOMATE_SERVER_URL;
@@ -121,24 +117,27 @@ function buildClientConfig(
 }
 
 /**
- * Check if credentials are available (from overrides, params, or env)
+ * Check if credentials are available (from an explicit override or env).
  */
 export function hasCredentials(overrides?: CWAutomateCredentials | null): boolean {
-  return !!(overrides || _clientOverride || getCredentials());
+  return !!(overrides || getCredentials());
 }
 
 /**
- * Get or create the ConnectWise Automate client (lazy initialization)
+ * Construct a ConnectWise Automate client from the supplied credentials.
  *
- * Priority: per-request override > env-based singleton
+ * When `credsOverride` is provided (gateway / request-scoped mode) it is used
+ * directly and process.env is never consulted. When omitted the function
+ * falls back to getCredentials() (env / stdio mode).
+ *
+ * A new client instance is created for every call — there is no shared
+ * mutable cache — so there is no cross-tenant leak surface regardless of how
+ * many requests are in flight concurrently.
  */
-export async function getClient(): Promise<ConnectWiseAutomateClient> {
-  // Per-request override takes priority (gateway mode)
-  if (_clientOverride) {
-    return _clientOverride;
-  }
-
-  const creds = getCredentials();
+export async function getClient(
+  credsOverride?: CWAutomateCredentials
+): Promise<ConnectWiseAutomateClient> {
+  const creds = credsOverride ?? getCredentials();
 
   if (!creds) {
     throw new Error(
@@ -146,66 +145,13 @@ export async function getClient(): Promise<ConnectWiseAutomateClient> {
     );
   }
 
-  // If credentials changed, invalidate the cached client
-  if (
-    _client &&
-    _credentials &&
-    (creds.serverUrl !== _credentials.serverUrl ||
-      creds.clientId !== _credentials.clientId ||
-      creds.username !== _credentials.username ||
-      creds.password !== _credentials.password ||
-      creds.twoFactorCode !== _credentials.twoFactorCode ||
-      creds.authMethod !== _credentials.authMethod)
-  ) {
-    _client = null;
-  }
-
-  if (!_client) {
-    // Lazy import the library
-    const { ConnectWiseAutomateClient } = await import(
-      "@wyre-technology/node-connectwise-automate"
-    );
-    _client = new ConnectWiseAutomateClient(buildClientConfig(creds));
-    _credentials = creds;
-  }
-
-  return _client;
-}
-
-/**
- * Create a new client directly from credentials (no caching).
- * Used in gateway mode for per-request isolation.
- */
-export async function createClientDirect(
-  creds: CWAutomateCredentials
-): Promise<ConnectWiseAutomateClient> {
-  const { ConnectWiseAutomateClient } = await import(
-    "@wyre-technology/node-connectwise-automate"
-  );
   return new ConnectWiseAutomateClient(buildClientConfig(creds));
 }
 
 /**
- * Set a per-request client override (gateway mode)
- */
-export function setClientOverride(
-  client: ConnectWiseAutomateClient
-): void {
-  _clientOverride = client;
-}
-
-/**
- * Clear the per-request client override
- */
-export function clearClientOverride(): void {
-  _clientOverride = null;
-}
-
-/**
- * Clear the cached client (useful for testing)
+ * No-op kept for test compatibility — no singleton to clear.
+ * @deprecated Tests should no longer rely on a module-level singleton.
  */
 export function clearClient(): void {
-  _client = null;
-  _credentials = null;
-  _clientOverride = null;
+  // intentional no-op: there is no shared client or override to clear
 }

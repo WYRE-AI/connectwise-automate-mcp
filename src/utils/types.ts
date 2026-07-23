@@ -3,6 +3,7 @@
  */
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { CWAutomateCredentials } from "./client.js";
 
 /**
  * Tool call result type - inline definition for MCP SDK compatibility
@@ -18,10 +19,18 @@ export type CallToolResult = {
 export interface DomainHandler {
   /** Get the tools for this domain */
   getTools(): Tool[];
-  /** Handle a tool call */
+  /**
+   * Handle a tool call.
+   *
+   * @param toolName - The tool to invoke.
+   * @param args - Tool arguments.
+   * @param creds - Per-request credentials (gateway mode). When omitted,
+   *                getClient() falls back to process.env (stdio / env mode).
+   */
   handleCall(
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    creds?: CWAutomateCredentials
   ): Promise<CallToolResult>;
 }
 

@@ -21,9 +21,6 @@ import { isDomainName, type DomainName } from "./utils/types.js";
 import {
   getCredentials,
   hasCredentials,
-  createClientDirect,
-  setClientOverride,
-  clearClientOverride,
   parseAuthMethod,
   type CWAutomateCredentials,
 } from "./utils/client.js";
@@ -205,13 +202,10 @@ export function createMcpServer(
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
 
-    // If per-request credentials were provided, create an isolated client
-    // and set it as the override so all domain handlers pick it up via getClient().
-    if (credentialOverrides) {
-      const directClient = await createClientDirect(credentialOverrides);
-      setClientOverride(directClient);
-    }
-
+    // credentialOverrides is captured in this closure per createMcpServer()
+    // call (one per request in gateway mode) and threaded explicitly through
+    // handler.handleCall(..., credentialOverrides) below -- no shared mutable
+    // state, so concurrent requests cannot observe each other's credentials.
     try {
       // Handle navigation / discovery helper
       if (name === "cwautomate_navigate") {
@@ -270,19 +264,19 @@ export function createMcpServer(
 
       if (name.startsWith("cwautomate_computers_")) {
         const handler = await getDomainHandler("computers");
-        return await handler.handleCall(name, toolArgs);
+        return await handler.handleCall(name, toolArgs, credentialOverrides);
       }
       if (name.startsWith("cwautomate_clients_")) {
         const handler = await getDomainHandler("clients");
-        return await handler.handleCall(name, toolArgs);
+        return await handler.handleCall(name, toolArgs, credentialOverrides);
       }
       if (name.startsWith("cwautomate_alerts_")) {
         const handler = await getDomainHandler("alerts");
-        return await handler.handleCall(name, toolArgs);
+        return await handler.handleCall(name, toolArgs, credentialOverrides);
       }
       if (name.startsWith("cwautomate_scripts_")) {
         const handler = await getDomainHandler("scripts");
-        return await handler.handleCall(name, toolArgs);
+        return await handler.handleCall(name, toolArgs, credentialOverrides);
       }
 
       // Unknown tool
@@ -301,10 +295,6 @@ export function createMcpServer(
         content: [{ type: "text", text: `Error: ${message}` }],
         isError: true,
       };
-    } finally {
-      if (credentialOverrides) {
-        clearClientOverride();
-      }
     }
   });
 

@@ -230,7 +230,7 @@ describe("ConnectWise Automate Client Utilities", () => {
       expect(config.credentials.method).toBe("user");
     });
 
-    it("should return cached client on subsequent calls", async () => {
+    it("builds a fresh client on every call — no shared singleton across calls", async () => {
       process.env.CW_AUTOMATE_SERVER_URL = "https://automate.example.com";
       process.env.CW_AUTOMATE_CLIENT_ID = "test-client-id";
       process.env.CW_AUTOMATE_USERNAME = "test-username";
@@ -239,7 +239,9 @@ describe("ConnectWise Automate Client Utilities", () => {
       const client1 = await getClient();
       const client2 = await getClient();
 
-      expect(client1).toBe(client2);
+      // A shared cache/singleton is exactly the mechanism that caused the
+      // cross-tenant credential leak this fix closes -- there must be none.
+      expect(client1).not.toBe(client2);
     });
 
     it("should create new client when credentials change", async () => {
