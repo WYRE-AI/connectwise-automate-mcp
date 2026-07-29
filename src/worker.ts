@@ -31,6 +31,7 @@ import {
   resolveGatewayCredentials,
   type CWAutomateCredentials,
 } from "./mcp-server.js";
+import { runWithServerRef } from "./utils/server-ref.js";
 
 export interface Env {
   CW_AUTOMATE_SERVER_URL?: string;
@@ -135,21 +136,27 @@ export default {
         credOverrides = credentialsFromEnv(env);
       }
 
-      // Fresh server + transport per request (stateless).
+      // Fresh server + transport per request (stateless). The whole chain
+      // below runs inside runWithServerRef so the server-ref binding — used
+      // by elicitation (elicitText/elicitSelection) — survives every await
+      // gap in this request's lifecycle without leaking into a concurrent
+      // request's server-ref.
       const server = createMcpServer(credOverrides);
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
-      await server.connect(transport);
+      return runWithServerRef(server, async () => {
+        const transport = new WebStandardStreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+        });
+        await server.connect(transport);
 
-      try {
-        const response = await transport.handleRequest(request);
-        return withCors(response);
-      } finally {
-        await transport.close();
-        await server.close();
-      }
+        try {
+          const response = await transport.handleRequest(request);
+          return withCors(response);
+        } finally {
+          await transport.close();
+          await server.close();
+        }
+      });
     }
 
     return json({ error: "Not found", endpoints: ["/mcp", "/health"] }, 404);

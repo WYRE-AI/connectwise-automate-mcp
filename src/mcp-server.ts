@@ -24,7 +24,6 @@ import {
   parseAuthMethod,
   type CWAutomateCredentials,
 } from "./utils/client.js";
-import { setServerRef } from "./utils/server-ref.js";
 import { registerResourceHandlers } from "./resources.js";
 
 export type { CWAutomateCredentials };
@@ -185,7 +184,10 @@ export function createMcpServer(
     }
   );
 
-  setServerRef(server);
+  // The caller owns binding this server into server-ref.ts's scope now
+  // (bindServerRef for stdio's single session, runWithServerRef wrapping
+  // the whole per-request chain for HTTP/Workers) — createMcpServer() stays
+  // side-effect-free with respect to server-ref.
   registerResourceHandlers(server);
 
   /**
