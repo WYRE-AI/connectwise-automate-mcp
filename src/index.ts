@@ -27,6 +27,13 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { type CWAutomateCredentials } from "./utils/client.js";
 import { createMcpServer, resolveGatewayCredentials } from "./mcp-server.js";
 import { bindServerRef, runWithServerRef } from "./utils/server-ref.js";
+import { verifyS2sHeader, S2S_HEADER } from "./s2s-verify.js";
+
+// Conduit service-to-service auth (gateway#377 parity). Non-empty =
+// enforce X-Gateway-S2S on every /mcp request; empty = disabled, behavior
+// exactly as before (dark-by-default until the gateway provisions this
+// container's derived subkey). See src/s2s-verify.ts.
+const S2S_SECRET = process.env.CONDUIT_S2S_SECRET || "";
 
 /**
  * Start the server with stdio transport (default)
@@ -79,6 +86,23 @@ async function startHttpTransport(): Promise<void> {
       // each initialize handshake gets a fresh server (the MCP SDK rejects
       // initialize on an already-initialized server).
       if (url.pathname === "/mcp") {
+        if (
+          S2S_SECRET &&
+          !verifyS2sHeader(
+            req.headers[S2S_HEADER] as string | undefined,
+            S2S_SECRET
+          )
+        ) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error:
+                "Missing or invalid X-Gateway-S2S header: this endpoint only accepts requests signed by the gateway.",
+            })
+          );
+          return;
+        }
+
         console.error(
           `[MCP] ${req.method} /mcp from ${req.headers["x-forwarded-for"] || req.socket.remoteAddress}` +
             ` hasServer=${!!req.headers["x-cwa-server"]}` +
