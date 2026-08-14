@@ -11,6 +11,7 @@ import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { elicitText } from "../utils/elicitation.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
+import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
 import { buildDeviceCard, DEVICE_CARD_META } from "../card.builder.js";
 
 /**
@@ -134,6 +135,54 @@ function getTools(): Tool[] {
         required: ["computer_id", "script_id"],
       },
     },
+    {
+      name: "cwautomate_commands_list",
+      description:
+        "List the Automate command catalog. Commands are a fixed, " +
+        "server-defined set addressed by ID — call this to find the command " +
+        "ID before using cwautomate_computers_run_command.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {},
+      },
+    },
+    {
+      name: "cwautomate_computers_run_command",
+      description:
+        "Issue a catalog command to a computer and wait for its result. " +
+        "The command_id must come from cwautomate_commands_list; free-text " +
+        "commands are not accepted by Automate. Note that the API user's " +
+        "command level and the group-level 'Send Commands' grant silently " +
+        "cap which commands may be issued.",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          computer_id: {
+            type: "number",
+            description: "The computer ID to send the command to",
+          },
+          command_id: {
+            type: "string",
+            description:
+              "The catalog command ID, from cwautomate_commands_list",
+          },
+          parameters: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Positional parameters for the command, in the order the " +
+              "command expects them",
+          },
+          timeout_seconds: {
+            type: "number",
+            description:
+              `How long to wait for the command to finish before returning ` +
+              `a partial result (default: ${DEFAULT_WAIT_SECONDS})`,
+          },
+        },
+        required: ["computer_id", "command_id"],
+      },
+    },
   ];
 }
 
@@ -235,16 +284,59 @@ async function handleCall(
       const computerId = args.computer_id as number;
       const scriptId = args.script_id as number;
       const parameters = args.parameters as Record<string, string> | undefined;
-      const result = await client.scripts.execute({
-        ScriptId: scriptId,
-        ComputerIds: [computerId],
-        Parameters: parameters,
-      });
+      const [result] = await client.scripts.runAndWait(
+        [computerId],
+        {
+          ScriptId: scriptId,
+          Parameters: parameters
+            ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
+            : undefined,
+        },
+        { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
+      );
 
       return jsonResult({
-        success: true,
-        message: `Script ${scriptId} queued for execution on computer ${computerId}`,
-        result,
+        computer_id: computerId,
+        script_id: scriptId,
+        launched: result?.launched,
+        launch_message: result?.launchMessage,
+        completed: result?.completed,
+        state: result?.state,
+        diagnostic_message: result?.diagnosticMessage,
+        waited_seconds: Math.round((result?.waitedMs ?? 0) / 1000),
+      });
+    }
+
+    case "cwautomate_commands_list": {
+      const commands = await client.computers.commands();
+
+      return listResult("commands", commands);
+    }
+
+    case "cwautomate_computers_run_command": {
+      const computerId = args.computer_id as number;
+      const commandId = String(args.command_id);
+      const timeoutSeconds =
+        (args.timeout_seconds as number | undefined) ?? DEFAULT_WAIT_SECONDS;
+
+      const result = await client.computers.executeCommandAndWait(
+        computerId,
+        {
+          Command: { Id: commandId },
+          Parameters: (args.parameters as string[] | undefined) ?? [],
+        },
+        { timeoutMs: timeoutSeconds * 1000 }
+      );
+
+      return jsonResult({
+        computer_id: computerId,
+        command_id: commandId,
+        execution_id: result.execution.Id,
+        completed: result.completed,
+        status: result.status,
+        output: result.output,
+        finished_at: result.history?.DateFinished,
+        waited_seconds: Math.round(result.waitedMs / 1000),
       });
     }
 
