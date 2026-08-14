@@ -5,27 +5,43 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Create mock functions using vi.hoisted
-const { mockScriptsList, mockScriptsGet, mockScriptsExecute, mockClient } =
-  vi.hoisted(() => {
-    const mockScriptsList = vi.fn();
-    const mockScriptsGet = vi.fn();
-    const mockScriptsExecute = vi.fn();
+const {
+  mockScriptsList,
+  mockScriptsGet,
+  mockRunAndWait,
+  mockExecuteBatch,
+  mockHistoryForComputer,
+  mockRunningOnComputer,
+  mockClient,
+} = vi.hoisted(() => {
+  const mockScriptsList = vi.fn();
+  const mockScriptsGet = vi.fn();
+  const mockRunAndWait = vi.fn();
+  const mockExecuteBatch = vi.fn();
+  const mockHistoryForComputer = vi.fn();
+  const mockRunningOnComputer = vi.fn();
 
-    const mockClient = {
-      scripts: {
-        list: mockScriptsList,
-        get: mockScriptsGet,
-        execute: mockScriptsExecute,
-      },
-    };
+  const mockClient = {
+    scripts: {
+      list: mockScriptsList,
+      get: mockScriptsGet,
+      runAndWait: mockRunAndWait,
+      executeBatch: mockExecuteBatch,
+      historyForComputer: mockHistoryForComputer,
+      runningOnComputer: mockRunningOnComputer,
+    },
+  };
 
-    return {
-      mockScriptsList,
-      mockScriptsGet,
-      mockScriptsExecute,
-      mockClient,
-    };
-  });
+  return {
+    mockScriptsList,
+    mockScriptsGet,
+    mockRunAndWait,
+    mockExecuteBatch,
+    mockHistoryForComputer,
+    mockRunningOnComputer,
+    mockClient,
+  };
+});
 
 // Mock the client module before importing the handler
 vi.mock("../../utils/client.js", () => ({
@@ -47,7 +63,10 @@ describe("Scripts Domain Handler", () => {
     // Clear call history
     mockScriptsList.mockClear();
     mockScriptsGet.mockClear();
-    mockScriptsExecute.mockClear();
+    mockRunAndWait.mockClear();
+    mockExecuteBatch.mockClear();
+    mockHistoryForComputer.mockClear();
+    mockRunningOnComputer.mockClear();
 
     // Reset mock implementations to the real API response shape:
     // Automate list endpoints return a bare JSON array (issue #35).
@@ -60,22 +79,24 @@ describe("Scripts Domain Handler", () => {
       Name: "Script 1",
       Description: "Test script",
     });
-    mockScriptsExecute.mockResolvedValue({
-      JobId: "abc",
-      ScriptId: 1,
-      ComputerIds: [1],
-      Status: "Queued",
-      QueuedDate: "2024-01-01T00:00:00Z",
+    mockRunAndWait.mockResolvedValue([]);
+    mockExecuteBatch.mockResolvedValue({
+      ScriptResults: [],
+      ContainsUnsuccessfulResults: false,
     });
+    mockHistoryForComputer.mockResolvedValue([]);
+    mockRunningOnComputer.mockResolvedValue([]);
   });
 
   describe("getTools", () => {
     it("should return all script tools", () => {
       const tools = scriptsHandler.getTools();
 
-      expect(tools.length).toBe(3);
+      expect(tools.length).toBe(5);
 
       const toolNames = tools.map((t) => t.name);
+      expect(toolNames).toContain("cwautomate_scripts_history");
+      expect(toolNames).toContain("cwautomate_scripts_running");
       expect(toolNames).toContain("cwautomate_scripts_list");
       expect(toolNames).toContain("cwautomate_scripts_get");
       expect(toolNames).toContain("cwautomate_scripts_execute");
@@ -152,36 +173,129 @@ describe("Scripts Domain Handler", () => {
     });
 
     describe("cwautomate_scripts_execute", () => {
-      it("should execute a script on specific computers", async () => {
+      it("should report the real per-computer outcome, not a blanket success", async () => {
+        mockRunAndWait.mockResolvedValue([
+          {
+            computerId: 1,
+            launched: true,
+            completed: true,
+            state: "Success",
+            waitedMs: 6000,
+          },
+          {
+            computerId: 2,
+            launched: true,
+            completed: true,
+            state: "Failure",
+            diagnosticMessage: "Script exited with code 1",
+            waitedMs: 8000,
+          },
+          {
+            computerId: 3,
+            launched: true,
+            completed: false,
+            waitedMs: 90000,
+          },
+        ]);
+
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_execute",
-          {
-            script_id: 1,
-            computer_ids: [1, 2, 3],
-          }
+          { script_id: 1, computer_ids: [1, 2, 3] }
         );
 
         expect(result.isError).toBeUndefined();
 
         const data = JSON.parse(result.content[0].text);
-        expect(data.success).toBe(true);
-        expect(data.message).toContain("Script 1 queued");
-        expect(data.message).toContain("3 computer(s)");
+        expect(data.summary).toContain("1 succeeded");
+        expect(data.summary).toContain("1 failed");
+        expect(data.summary).toContain("1 still running");
+        expect(data.runs[1].diagnostic_message).toBe(
+          "Script exited with code 1"
+        );
       });
 
-      it("should map parameters and priority to the library shape", async () => {
+      it("should surface a launch the server refused", async () => {
+        mockRunAndWait.mockResolvedValue([
+          {
+            computerId: 9,
+            launched: false,
+            launchMessage: "Insufficient permissions",
+            completed: false,
+            waitedMs: 0,
+          },
+        ]);
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_execute",
+          { script_id: 1, computer_ids: [9] }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.runs[0].launched).toBe(false);
+        expect(data.runs[0].launch_message).toBe("Insufficient permissions");
+        expect(data.summary).toContain("1 failed");
+      });
+
+      it("should map parameters to Key/Value pairs and priority to a number", async () => {
+        mockRunAndWait.mockResolvedValue([]);
+
         await scriptsHandler.handleCall("cwautomate_scripts_execute", {
           script_id: 1,
           computer_ids: [1, 2],
           parameters: { arg1: "value1" },
           priority: "high",
+          skip_offline: true,
         });
 
-        expect(mockScriptsExecute).toHaveBeenCalledWith({
-          ScriptId: 1,
-          ComputerIds: [1, 2],
-          Parameters: { arg1: "value1" },
-          Priority: 1,
+        expect(mockRunAndWait).toHaveBeenCalledWith(
+          [1, 2],
+          {
+            ScriptId: 1,
+            Parameters: [{ Key: "arg1", Value: "value1" }],
+            Priority: 1,
+            OfflineActionFlags: {
+              SkipsOfflineAgents: true,
+              WakesOfflineAgents: undefined,
+            },
+          },
+          { timeoutMs: 90000 }
+        );
+      });
+
+      it("should launch without polling when wait is false", async () => {
+        mockExecuteBatch.mockResolvedValue({
+          ScriptResults: [{ EntityId: 1 }],
+          ContainsUnsuccessfulResults: false,
+        });
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_execute",
+          { script_id: 1, computer_ids: [1], wait: false }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.waited).toBe(false);
+        expect(mockRunAndWait).not.toHaveBeenCalled();
+        expect(mockExecuteBatch).toHaveBeenCalled();
+      });
+    });
+
+    describe("cwautomate_scripts_history", () => {
+      it("should return the bare array the API sends", async () => {
+        mockHistoryForComputer.mockResolvedValue([
+          { Id: 1, ScriptId: 5, State: "Success" },
+        ]);
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_history",
+          { computer_id: 7 }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.total).toBe(1);
+        expect(data.history[0].State).toBe("Success");
+        expect(mockHistoryForComputer).toHaveBeenCalledWith(7, {
+          pageSize: 50,
         });
       });
     });

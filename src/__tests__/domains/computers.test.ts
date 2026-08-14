@@ -9,22 +9,28 @@ const {
   mockComputersList,
   mockComputersGet,
   mockComputersRestart,
-  mockScriptsExecute,
+  mockScriptsRunAndWait,
+  mockCommands,
+  mockExecuteCommandAndWait,
   mockClient,
 } = vi.hoisted(() => {
   const mockComputersList = vi.fn();
   const mockComputersGet = vi.fn();
   const mockComputersRestart = vi.fn();
-  const mockScriptsExecute = vi.fn();
+  const mockScriptsRunAndWait = vi.fn();
+  const mockCommands = vi.fn();
+  const mockExecuteCommandAndWait = vi.fn();
 
   const mockClient = {
     computers: {
       list: mockComputersList,
       get: mockComputersGet,
       restart: mockComputersRestart,
+      commands: mockCommands,
+      executeCommandAndWait: mockExecuteCommandAndWait,
     },
     scripts: {
-      execute: mockScriptsExecute,
+      runAndWait: mockScriptsRunAndWait,
     },
   };
 
@@ -32,7 +38,9 @@ const {
     mockComputersList,
     mockComputersGet,
     mockComputersRestart,
-    mockScriptsExecute,
+    mockScriptsRunAndWait,
+    mockCommands,
+    mockExecuteCommandAndWait,
     mockClient,
   };
 });
@@ -58,7 +66,9 @@ describe("Computers Domain Handler", () => {
     mockComputersList.mockClear();
     mockComputersGet.mockClear();
     mockComputersRestart.mockClear();
-    mockScriptsExecute.mockClear();
+    mockScriptsRunAndWait.mockClear();
+    mockCommands.mockClear();
+    mockExecuteCommandAndWait.mockClear();
 
     // Reset mock implementations to the real API response shape:
     // Automate list endpoints return a bare JSON array (issue #35).
@@ -72,12 +82,25 @@ describe("Computers Domain Handler", () => {
       ClientId: 5,
     });
     mockComputersRestart.mockResolvedValue(undefined);
-    mockScriptsExecute.mockResolvedValue({
-      JobId: "abc",
-      ScriptId: 100,
-      ComputerIds: [1],
-      Status: "Queued",
-      QueuedDate: "2024-01-01T00:00:00Z",
+    mockScriptsRunAndWait.mockResolvedValue([
+      {
+        computerId: 1,
+        launched: true,
+        completed: true,
+        state: "Success",
+        waitedMs: 5000,
+      },
+    ]);
+    mockCommands.mockResolvedValue([
+      { Id: "2", Name: "Command Prompt", Level: 1 },
+    ]);
+    mockExecuteCommandAndWait.mockResolvedValue({
+      completed: true,
+      execution: { Id: 4711, Status: "Success" },
+      history: { Id: 4711, DateFinished: "2024-01-15T10:35:04Z" },
+      status: "Success",
+      output: "Windows IP Configuration",
+      waitedMs: 4000,
     });
   });
 
@@ -85,7 +108,7 @@ describe("Computers Domain Handler", () => {
     it("should return all computer tools", () => {
       const tools = computersHandler.getTools();
 
-      expect(tools.length).toBe(5);
+      expect(tools.length).toBe(7);
 
       const toolNames = tools.map((t) => t.name);
       expect(toolNames).toContain("cwautomate_computers_list");
@@ -93,6 +116,8 @@ describe("Computers Domain Handler", () => {
       expect(toolNames).toContain("cwautomate_computers_search");
       expect(toolNames).toContain("cwautomate_computers_reboot");
       expect(toolNames).toContain("cwautomate_computers_run_script");
+      expect(toolNames).toContain("cwautomate_computers_run_command");
+      expect(toolNames).toContain("cwautomate_commands_list");
     });
 
     it("cwautomate_computers_get should require computer_id", () => {
@@ -250,7 +275,7 @@ describe("Computers Domain Handler", () => {
     });
 
     describe("cwautomate_computers_run_script", () => {
-      it("should run a script on a computer via scripts.execute", async () => {
+      it("should report the run's real outcome", async () => {
         const result = await computersHandler.handleCall(
           "cwautomate_computers_run_script",
           {
@@ -262,27 +287,87 @@ describe("Computers Domain Handler", () => {
         expect(result.isError).toBeUndefined();
 
         const data = JSON.parse(result.content[0].text);
-        expect(data.success).toBe(true);
-        expect(data.message).toContain("Script 100 queued");
-        expect(mockScriptsExecute).toHaveBeenCalledWith({
-          ScriptId: 100,
-          ComputerIds: [1],
-          Parameters: undefined,
-        });
+        expect(data.completed).toBe(true);
+        expect(data.state).toBe("Success");
+        expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
+          [1],
+          { ScriptId: 100, Parameters: undefined },
+          { timeoutMs: 90000 }
+        );
       });
 
-      it("should pass parameters to scripts.execute", async () => {
+      it("should report a failed run rather than a blanket success", async () => {
+        mockScriptsRunAndWait.mockResolvedValue([
+          {
+            computerId: 1,
+            launched: true,
+            completed: true,
+            state: "Failure",
+            diagnosticMessage: "Script exited with code 1",
+            waitedMs: 7000,
+          },
+        ]);
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_run_script",
+          { computer_id: 1, script_id: 100 }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.state).toBe("Failure");
+        expect(data.diagnostic_message).toBe("Script exited with code 1");
+      });
+
+      it("should convert parameters to Key/Value pairs", async () => {
         await computersHandler.handleCall("cwautomate_computers_run_script", {
           computer_id: 1,
           script_id: 100,
           parameters: { arg1: "value1" },
         });
 
-        expect(mockScriptsExecute).toHaveBeenCalledWith({
-          ScriptId: 100,
-          ComputerIds: [1],
-          Parameters: { arg1: "value1" },
-        });
+        expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
+          [1],
+          {
+            ScriptId: 100,
+            Parameters: [{ Key: "arg1", Value: "value1" }],
+          },
+          { timeoutMs: 90000 }
+        );
+      });
+    });
+
+    describe("cwautomate_computers_run_command", () => {
+      it("should send the command as a catalog reference and return its output", async () => {
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_run_command",
+          {
+            computer_id: 1,
+            command_id: "2",
+            parameters: ["ipconfig /all"],
+          }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.completed).toBe(true);
+        expect(data.output).toBe("Windows IP Configuration");
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
+          1,
+          { Command: { Id: "2" }, Parameters: ["ipconfig /all"] },
+          { timeoutMs: 90000 }
+        );
+      });
+    });
+
+    describe("cwautomate_commands_list", () => {
+      it("should list the command catalog", async () => {
+        const result = await computersHandler.handleCall(
+          "cwautomate_commands_list",
+          {}
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.total).toBe(1);
+        expect(data.commands[0].Name).toBe("Command Prompt");
       });
     });
 
