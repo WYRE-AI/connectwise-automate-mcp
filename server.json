@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.wyre-technology/connectwise-automate-mcp",
+  "name": "io.github.WYRE-AI/connectwise-automate-mcp",
   "title": "ConnectWise Automate",
   "description": "MCP server for ConnectWise Automate RMM — computers, clients, alerts, and scripts.",
   "repository": {
-    "url": "https://github.com/wyre-technology/connectwise-automate-mcp",
+    "url": "https://github.com/WYRE-AI/connectwise-automate-mcp",
     "source": "github"
   },
   "version": "0.0.0",
-  "websiteUrl": "https://github.com/wyre-technology/connectwise-automate-mcp",
+  "websiteUrl": "https://github.com/WYRE-AI/connectwise-automate-mcp",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/wyre-technology/connectwise-automate-mcp:0.0.0",
+      "identifier": "ghcr.io/wyre-ai/connectwise-automate-mcp:0.0.0",
       "transport": {
         "type": "stdio"
       },

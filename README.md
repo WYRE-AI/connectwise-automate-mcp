@@ -14,23 +14,23 @@ A Model Context Protocol (MCP) server for ConnectWise Automate with decision tre
 > 1. Create a GitHub **Personal Access Token** with the `read:packages` scope
 >    ([classic token](https://github.com/settings/tokens/new?scopes=read:packages&description=connectwise-automate-mcp%20deploy)).
 >    Any GitHub account works — you do **not** need to be a member of the
->    `wyre-technology` org to read its public packages.
+>    `WYRE-AI` org to read its public packages.
 > 2. Add it as a build variable when prompted by the deploy flow:
 >    - **Cloudflare Workers** → set a build variable named **`NODE_AUTH_TOKEN`** to your PAT
 >      (Workers → Settings → Build → Variables and Secrets).
 >    - **DigitalOcean App Platform** → set an encrypted env var named **`GITHUB_TOKEN`**
 >      with scope **Build Time** to your PAT (the `.do/deploy.template.yaml` already declares it).
 
-[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/wyre-technology/connectwise-automate-mcp/tree/main)
+[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/WYRE-AI/connectwise-automate-mcp/tree/main)
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/wyre-technology/connectwise-automate-mcp)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/WYRE-AI/connectwise-automate-mcp)
 
 > [!NOTE]
 > The DigitalOcean target builds the full Docker image and runs the complete MCP
 > server over HTTP — this is the recommended path for operators. This repo has no
 > Cloudflare Workers entrypoint (`src/worker.ts`), so the Workers button is not a
 > supported target yet; prefer DigitalOcean or the prebuilt container image
-> (`ghcr.io/wyre-technology/connectwise-automate-mcp`).
+> (`ghcr.io/wyre-ai/connectwise-automate-mcp`).
 
 ## Features
 
@@ -48,10 +48,10 @@ token even for public packages. Authenticate once, then install:
 # Authenticate npm to GitHub Packages (token needs the read:packages scope)
 export NODE_AUTH_TOKEN=$(gh auth token)   # or a PAT with read:packages
 
-npm install @wyre-technology/connectwise-automate-mcp
+npm install @wyre-ai/connectwise-automate-mcp
 ```
 
-The repo's `.npmrc` already points the `@wyre-technology` scope at GitHub Packages and
+The repo's `.npmrc` already points the `@wyre-ai` scope at GitHub Packages and
 reads the token from `NODE_AUTH_TOKEN`, so no further config is needed.
 
 ## Configuration
@@ -89,7 +89,7 @@ Add to your Claude configuration:
   "mcpServers": {
     "connectwise-automate": {
       "command": "npx",
-      "args": ["@wyre-technology/connectwise-automate-mcp"],
+      "args": ["@wyre-ai/connectwise-automate-mcp"],
       "env": {
         "CW_AUTOMATE_SERVER_URL": "https://your-server.hostedrmm.com",
         "CW_AUTOMATE_CLIENT_ID": "your-client-id",

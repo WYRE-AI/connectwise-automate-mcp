@@ -2,7 +2,7 @@ FROM node:26-alpine AS builder
 WORKDIR /app
 COPY package*.json .npmrc ./
 ARG GITHUB_TOKEN
-RUN echo "@wyre-technology:registry=https://npm.pkg.github.com" > .npmrc && \
+RUN echo "@wyre-ai:registry=https://npm.pkg.github.com" > .npmrc && \
     echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc && \
     npm install && \
     rm -f .npmrc
@@ -25,5 +25,5 @@ ENV MCP_TRANSPORT=http
 ENV MCP_HTTP_PORT=8080
 ENV MCP_HTTP_HOST=0.0.0.0
 ENV AUTH_MODE=env
-LABEL io.modelcontextprotocol.server.name="io.github.wyre-technology/connectwise-automate-mcp"
+LABEL io.modelcontextprotocol.server.name="io.github.WYRE-AI/connectwise-automate-mcp"
 CMD ["node", "dist/index.js"]

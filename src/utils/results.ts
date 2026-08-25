@@ -37,7 +37,7 @@ function asEnvelope(response: unknown): {
  *
  * This is a compensating shim; the root cause is the library's response types +
  * unchecked cast, tracked upstream in
- * wyre-technology/node-connectwise-automate#38. Once that lands this can return
+ * WYRE-AI/node-connectwise-automate#38. Once that lands this can return
  * to trusting the library's typed shape.
  */
 export function listItems<T = unknown>(response: unknown): T[] {
