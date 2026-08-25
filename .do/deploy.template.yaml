@@ -3,7 +3,7 @@ spec:
   services:
   - name: connectwise-automate-mcp
     github:
-      repo: wyre-technology/connectwise-automate-mcp
+      repo: WYRE-AI/connectwise-automate-mcp
       branch: main
       deploy_on_push: true
     source_dir: /
@@ -13,7 +13,7 @@ spec:
     instance_size_slug: basic-xxs
     envs:
     # GitHub PAT (read:packages) used at build time to install the private
-    # @wyre-technology/* dependency from GitHub Packages. Passed to the
+    # @wyre-ai/* dependency from GitHub Packages. Passed to the
     # Dockerfile's `ARG GITHUB_TOKEN`. Set this as an encrypted SECRET in the
     # App Platform UI before the first deploy, or the build fails with npm 401.
     - key: GITHUB_TOKEN
