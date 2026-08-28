@@ -255,7 +255,7 @@ export function createMcpServer(
           content: [
             {
               type: "text",
-              text: `ConnectWise Automate MCP Server Status\n\nCredentials: ${credStatus}\nAvailable domains: ${getAvailableDomains().join(", ")}\n\nAll tools are available at all times. Use cwautomate_navigate to discover tools by domain.`,
+              text: `ConnectWise Automate MCP Server Status\n\nCredentials: ${credStatus}\nAvailable domains: ${getAvailableDomains().join(", ")}\n\nCall conduit__my_access to see which tools are available to you.`,
             },
           ],
         };
@@ -286,7 +286,7 @@ export function createMcpServer(
         content: [
           {
             type: "text",
-            text: `Unknown tool: ${name}. Use cwautomate_navigate to discover available tools by domain.`,
+            text: `Unknown tool: ${name}. Call conduit__my_access to see which tools are available to you.`,
           },
         ],
         isError: true,
