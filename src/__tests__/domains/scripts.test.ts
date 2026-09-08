@@ -138,19 +138,49 @@ describe("Scripts Domain Handler", () => {
         expect(data.scripts).toHaveLength(2);
       });
 
-      it("should map search to the name filter", async () => {
+      it("should map search to a Name condition, not the library's no-op name param", async () => {
         await scriptsHandler.handleCall("cwautomate_scripts_list", {
           folder_id: 5,
           search: "install",
           limit: 25,
         });
 
+        // The library's `name` list param isn't a real Automate filter — the
+        // API only understands `condition` (see utils/odata.ts). Asserting
+        // `condition` here (and NOT `name`) is what catches the regression:
+        // https://github.com/wyre-technology/connectwise-automate-mcp bug
+        // where `search: "Reboot"` returned every script unfiltered.
         expect(mockScriptsList).toHaveBeenCalledWith({
           folderId: 5,
-          name: "install",
+          condition: "Name like '%install%'",
           pageSize: 25,
           page: undefined,
         });
+      });
+
+      it("should omit the condition entirely when no search term is given", async () => {
+        await scriptsHandler.handleCall("cwautomate_scripts_list", {
+          folder_id: 5,
+        });
+
+        expect(mockScriptsList).toHaveBeenCalledWith({
+          folderId: 5,
+          condition: undefined,
+          pageSize: 50,
+          page: undefined,
+        });
+      });
+
+      it("should escape single quotes in the search term", async () => {
+        await scriptsHandler.handleCall("cwautomate_scripts_list", {
+          search: "O'Brien's script",
+        });
+
+        expect(mockScriptsList).toHaveBeenCalledWith(
+          expect.objectContaining({
+            condition: "Name like '%O''Brien''s script%'",
+          })
+        );
       });
     });
 
@@ -277,6 +307,64 @@ describe("Scripts Domain Handler", () => {
         expect(data.waited).toBe(false);
         expect(mockRunAndWait).not.toHaveBeenCalled();
         expect(mockExecuteBatch).toHaveBeenCalled();
+      });
+
+      it("should report a clear, honest result instead of a raw connection error when waiting is interrupted", async () => {
+        mockRunAndWait.mockRejectedValue(new TypeError("terminated"));
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_execute",
+          { script_id: 1, computer_ids: [1, 2] }
+        );
+
+        expect(result.isError).toBeUndefined();
+        const data = JSON.parse(result.content[0].text);
+        expect(data.summary).toContain("interrupted");
+        expect(data.summary).toContain("cwautomate_scripts_history");
+        expect(data.computer_ids).toEqual([1, 2]);
+      });
+
+      it("should not swallow other errors as if they were a transient network failure", async () => {
+        mockRunAndWait.mockRejectedValue(new Error("Validation error"));
+
+        await expect(
+          scriptsHandler.handleCall("cwautomate_scripts_execute", {
+            script_id: 1,
+            computer_ids: [1],
+          })
+        ).rejects.toThrow("Validation error");
+      });
+
+      it("should retry the launch exactly once on a transient network failure when wait is false", async () => {
+        mockExecuteBatch
+          .mockRejectedValueOnce(new TypeError("terminated"))
+          .mockResolvedValueOnce({
+            ScriptResults: [{ EntityId: 1 }],
+            ContainsUnsuccessfulResults: false,
+          });
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_execute",
+          { script_id: 1, computer_ids: [1], wait: false }
+        );
+
+        expect(result.isError).toBeUndefined();
+        const data = JSON.parse(result.content[0].text);
+        expect(data.waited).toBe(false);
+        expect(mockExecuteBatch).toHaveBeenCalledTimes(2);
+      });
+
+      it("should surface a second consecutive transient network failure when wait is false", async () => {
+        mockExecuteBatch.mockRejectedValue(new TypeError("terminated"));
+
+        await expect(
+          scriptsHandler.handleCall("cwautomate_scripts_execute", {
+            script_id: 1,
+            computer_ids: [1],
+            wait: false,
+          })
+        ).rejects.toThrow("terminated");
+        expect(mockExecuteBatch).toHaveBeenCalledTimes(2);
       });
     });
 

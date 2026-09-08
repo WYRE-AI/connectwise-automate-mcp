@@ -13,13 +13,8 @@ import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
 import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
 import { buildDeviceCard, DEVICE_CARD_META } from "../card.builder.js";
-
-/**
- * Escape single quotes for an OData-style condition string value.
- */
-function escapeConditionValue(value: string): string {
-  return value.replace(/'/g, "''");
-}
+import { escapeConditionValue } from "../utils/odata.js";
+import { isTransientNetworkError } from "../utils/network-errors.js";
 
 /**
  * Get computer domain tools
@@ -272,7 +267,18 @@ async function handleCall(
     case "cwautomate_computers_reboot": {
       const computerId = args.computer_id as number;
       const force = args.force as boolean | undefined;
-      await client.computers.restart(computerId, force);
+
+      // A single, non-idempotent write: retry exactly once, and only for
+      // the transport-level failure isTransientNetworkError identifies (the
+      // request never got a response at all). See that function's doc
+      // comment for why the client library's own retry logic doesn't cover
+      // this case.
+      try {
+        await client.computers.restart(computerId, force);
+      } catch (error) {
+        if (!isTransientNetworkError(error)) throw error;
+        await client.computers.restart(computerId, force);
+      }
 
       return jsonResult({
         success: true,
@@ -284,16 +290,38 @@ async function handleCall(
       const computerId = args.computer_id as number;
       const scriptId = args.script_id as number;
       const parameters = args.parameters as Record<string, string> | undefined;
-      const [result] = await client.scripts.runAndWait(
-        [computerId],
-        {
-          ScriptId: scriptId,
-          Parameters: parameters
-            ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
-            : undefined,
-        },
-        { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
-      );
+
+      let result;
+      try {
+        [result] = await client.scripts.runAndWait(
+          [computerId],
+          {
+            ScriptId: scriptId,
+            Parameters: parameters
+              ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
+              : undefined,
+          },
+          { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
+        );
+      } catch (error) {
+        // runAndWait launches the script and then polls for its result over
+        // several requests. If a transient network failure hits mid-poll,
+        // we genuinely don't know whether the script already launched —
+        // retrying could run it a second time, so report that honestly
+        // instead of guessing either way. See isTransientNetworkError's doc
+        // comment for what this failure looks like and why it happens.
+        if (!isTransientNetworkError(error)) throw error;
+        return jsonResult({
+          computer_id: computerId,
+          script_id: scriptId,
+          completed: false,
+          message:
+            "Connection to ConnectWise Automate was interrupted while " +
+            "waiting for the result. The script may still have launched " +
+            "— check cwautomate_scripts_history for this computer rather " +
+            "than assuming it failed.",
+        });
+      }
 
       return jsonResult({
         computer_id: computerId,

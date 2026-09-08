@@ -10,6 +10,8 @@ import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
 import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
+import { containsCondition } from "../utils/odata.js";
+import { isTransientNetworkError } from "../utils/network-errors.js";
 
 /**
  * Convert the tool's key/value parameter object into the Key/Value pair array
@@ -195,9 +197,15 @@ async function handleCall(
     case "cwautomate_scripts_list": {
       const limit = (args.limit as number) || 50;
       const skip = (args.skip as number) || 0;
+
+      // The library's `name` list param isn't a real Automate filter — the
+      // API only understands the generic `condition` expression, so a bare
+      // `?name=...` query param is silently ignored and every script comes
+      // back unfiltered. Build the same kind of `like` condition
+      // cwautomate_computers_search already uses for computer names.
       const response = await client.scripts.list({
         folderId: args.folder_id as number | undefined,
-        name: args.search as string | undefined,
+        condition: containsCondition("Name", args.search as string | undefined),
         pageSize: limit,
         page: toPage(skip, limit),
       });
@@ -234,10 +242,24 @@ async function handleCall(
       };
 
       if (!wait) {
-        const batch = await client.scripts.executeBatch({
-          ...request,
-          EntityIds: computerIds,
-        });
+        // A single, non-idempotent write: retry exactly once, and only for
+        // the transport-level failure isTransientNetworkError identifies
+        // (the request never got a response at all). See that function's
+        // doc comment for why the client library's own retry logic doesn't
+        // cover this case.
+        let batch;
+        try {
+          batch = await client.scripts.executeBatch({
+            ...request,
+            EntityIds: computerIds,
+          });
+        } catch (error) {
+          if (!isTransientNetworkError(error)) throw error;
+          batch = await client.scripts.executeBatch({
+            ...request,
+            EntityIds: computerIds,
+          });
+        }
 
         return jsonResult({
           script_id: scriptId,
@@ -249,9 +271,28 @@ async function handleCall(
         });
       }
 
-      const results = await client.scripts.runAndWait(computerIds, request, {
-        timeoutMs,
-      });
+      let results;
+      try {
+        results = await client.scripts.runAndWait(computerIds, request, {
+          timeoutMs,
+        });
+      } catch (error) {
+        // runAndWait launches the script and then polls for its result over
+        // several requests. If a transient network failure hits mid-poll,
+        // we genuinely don't know whether the script already launched for
+        // some (or all) targets — retrying could run it a second time, so
+        // report that honestly instead of guessing either way.
+        if (!isTransientNetworkError(error)) throw error;
+        return jsonResult({
+          script_id: scriptId,
+          summary:
+            `Connection to ConnectWise Automate was interrupted while ` +
+            `waiting for ${computerIds.length} target(s). The script may ` +
+            `still have launched — check cwautomate_scripts_history for ` +
+            `each computer rather than assuming it failed.`,
+          computer_ids: computerIds,
+        });
+      }
 
       const runs = results.map((result) => ({
         computer_id: result.computerId,
