@@ -272,6 +272,49 @@ describe("Computers Domain Handler", () => {
 
         expect(mockComputersRestart).toHaveBeenCalledWith(1, true);
       });
+
+      it("should retry exactly once on a transient network failure and still report success", async () => {
+        mockComputersRestart
+          .mockRejectedValueOnce(new TypeError("terminated"))
+          .mockResolvedValueOnce(undefined);
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_reboot",
+          { computer_id: 1 }
+        );
+
+        expect(result.isError).toBeUndefined();
+        const data = JSON.parse(result.content[0].text);
+        expect(data.success).toBe(true);
+        expect(mockComputersRestart).toHaveBeenCalledTimes(2);
+      });
+
+      it("should surface a second consecutive transient network failure rather than retry forever", async () => {
+        mockComputersRestart.mockRejectedValue(new TypeError("terminated"));
+
+        // handleCall() doesn't itself catch-and-format errors into an
+        // isError result — that's mcp-server.ts's job (the outer catch-all
+        // that produces the "Error: terminated" text customers saw). At
+        // this layer, a failure that survives the retry should simply
+        // propagate so that wrapper can format it.
+        await expect(
+          computersHandler.handleCall("cwautomate_computers_reboot", {
+            computer_id: 1,
+          })
+        ).rejects.toThrow("terminated");
+        expect(mockComputersRestart).toHaveBeenCalledTimes(2);
+      });
+
+      it("should not retry (or mask) a non-network error", async () => {
+        mockComputersRestart.mockRejectedValue(new Error("Access forbidden"));
+
+        await expect(
+          computersHandler.handleCall("cwautomate_computers_reboot", {
+            computer_id: 1,
+          })
+        ).rejects.toThrow("Access forbidden");
+        expect(mockComputersRestart).toHaveBeenCalledTimes(1);
+      });
     });
 
     describe("cwautomate_computers_run_script", () => {
@@ -333,6 +376,32 @@ describe("Computers Domain Handler", () => {
           },
           { timeoutMs: 90000 }
         );
+      });
+
+      it("should report a clear, honest result instead of a raw connection error when waiting is interrupted", async () => {
+        mockScriptsRunAndWait.mockRejectedValue(new TypeError("terminated"));
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_run_script",
+          { computer_id: 1, script_id: 100 }
+        );
+
+        expect(result.isError).toBeUndefined();
+        const data = JSON.parse(result.content[0].text);
+        expect(data.completed).toBe(false);
+        expect(data.message).toContain("interrupted");
+        expect(data.message).toContain("cwautomate_scripts_history");
+      });
+
+      it("should not swallow other errors as if they were a transient network failure", async () => {
+        mockScriptsRunAndWait.mockRejectedValue(new Error("Validation error"));
+
+        await expect(
+          computersHandler.handleCall("cwautomate_computers_run_script", {
+            computer_id: 1,
+            script_id: 100,
+          })
+        ).rejects.toThrow("Validation error");
       });
     });
 
