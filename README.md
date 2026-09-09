@@ -125,9 +125,8 @@ The server uses a decision tree pattern. Start by navigating to a domain:
 - Update existing clients
 
 #### Alerts
-- List alerts with filtering
+- List alerts with filtering (read-only in the Automate API)
 - Get alert details
-- Acknowledge alerts
 
 #### Scripts
 - List available scripts

@@ -21,6 +21,10 @@
 - **`cwautomate_computers_run_command`** correlates the result by the execution id Automate returns (polling `CommandExecute?ids=`) instead of matching any newly finished history row, so a concurrent command on the same computer can no longer be mistaken for this one. `finished_at` is gone from the result; the execution row carries no such timestamp.
 - **The device card reads the spec's computer fields** (`Status`, `OperatingSystemName`/`OperatingSystemVersion`, `RemoteAgentLastContact`, `RemoteAgentVersion`, embedded `Client`/`Location`). The previous names (`IsOnline`, `OS`, `LastContact`, `AgentVersion`, `ClientId`) never existed on the wire, so the card was mostly blank.
 
+- **Publishing:** the package now publishes to the GitHub Packages npm registry
+  (`@semantic-release/npm` `npmPublish: true`), aligning with the rest of the
+  `@wyre-technology` fleet.
+
 ### Removed
 
 - **`cwautomate_alerts_acknowledge`.** The Automate API has no acknowledge (or close) route for alerts; the tool called a path that does not exist.
@@ -58,12 +62,6 @@
   contract enforceable by `npm test` so a real source regression (e.g.
   re-introducing an HTTP transport default or gating the canary behind
   navigation) is caught locally instead of only by the external check.
-
-### Changed
-
-- **Publishing:** the package now publishes to the GitHub Packages npm registry
-  (`@semantic-release/npm` `npmPublish: true`), aligning with the rest of the
-  `@wyre-technology` fleet.
 
 ## [1.3.3](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.3.2...v1.3.3) (2026-04-06)
 
