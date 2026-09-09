@@ -5,7 +5,7 @@
  */
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { ComputerListParams } from "@wyre-technology/node-connectwise-automate";
+import type { ComputerListParams } from "@wyre-ai/node-connectwise-automate";
 import type { DomainHandler, CallToolResult } from "../utils/types.js";
 import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { elicitText } from "../utils/elicitation.js";
@@ -91,7 +91,13 @@ function getTools(): Tool[] {
     },
     {
       name: "cwautomate_computers_reboot",
-      description: "Send a restart command to a computer",
+      description:
+        "Reboot a computer and wait for the command's result. Automate has " +
+        "no dedicated restart route: the reboot is issued as a catalog " +
+        "command (POST /Computers/{id}/CommandExecute). By default the " +
+        "first catalog entry named like 'Reboot' or 'Restart' is used; pass " +
+        "command_id (from cwautomate_commands_list) to choose a specific " +
+        "one. The API user's command level caps which commands may be issued.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -99,9 +105,11 @@ function getTools(): Tool[] {
             type: "number",
             description: "The computer ID to reboot",
           },
-          force: {
-            type: "boolean",
-            description: "Force reboot even if users are logged in",
+          command_id: {
+            type: "string",
+            description:
+              "Catalog command ID to issue instead of auto-selecting the " +
+              "reboot command, from cwautomate_commands_list",
           },
         },
         required: ["computer_id"],
@@ -217,13 +225,12 @@ async function handleCall(
         pageSize: limit,
         page: toPage(skip, limit),
       };
-      // Map the friendly status filter onto the library's online-state params.
+      // Map the friendly status filter onto the library's online-state
+      // param; "all" (or unset) means no filter.
       if (status === "online") {
         params.isOnline = true;
       } else if (status === "offline") {
         params.isOnline = false;
-      } else if (status === "all") {
-        params.includeOffline = true;
       }
 
       const response = await client.computers.list(params);
@@ -266,23 +273,67 @@ async function handleCall(
 
     case "cwautomate_computers_reboot": {
       const computerId = args.computer_id as number;
-      const force = args.force as boolean | undefined;
+      let commandId = args.command_id ? String(args.command_id) : undefined;
+      let commandName: string | undefined;
 
-      // A single, non-idempotent write: retry exactly once, and only for
-      // the transport-level failure isTransientNetworkError identifies (the
-      // request never got a response at all). See that function's doc
-      // comment for why the client library's own retry logic doesn't cover
-      // this case.
+      // Automate has no restart route; a reboot is whatever the instance's
+      // command catalog calls it. Resolve it unless the caller chose one.
+      if (!commandId) {
+        const catalog = await client.computers.commands();
+        const reboot = catalog.find((c) => /reboot|restart/i.test(c.Name ?? ""));
+        if (!reboot?.Id) {
+          const names = catalog.map((c) => c.Name).filter(Boolean).join(", ");
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  "No reboot/restart command found in this instance's " +
+                  "command catalog. Pass command_id explicitly. Available " +
+                  `commands: ${names || "(none)"}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        commandId = reboot.Id;
+        commandName = reboot.Name;
+      }
+
+      let result;
       try {
-        await client.computers.restart(computerId, force);
+        result = await client.computers.executeCommandAndWait(
+          computerId,
+          { Command: { Id: commandId }, Parameters: [] },
+          { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
+        );
       } catch (error) {
+        // Issuing the command is one request and polling for its outcome is
+        // several more. A transient drop mid-poll leaves it unknown whether
+        // the reboot was queued, and re-issuing could reboot the machine
+        // twice — so report that honestly rather than retry.
         if (!isTransientNetworkError(error)) throw error;
-        await client.computers.restart(computerId, force);
+        return jsonResult({
+          computer_id: computerId,
+          command_id: commandId,
+          command_name: commandName,
+          completed: false,
+          message:
+            "Connection to ConnectWise Automate was interrupted while " +
+            "waiting for the result. The reboot may still have been queued " +
+            "— check the computer's status with cwautomate_computers_get " +
+            "rather than assuming it failed.",
+        });
       }
 
       return jsonResult({
-        success: true,
-        message: `Reboot command sent to computer ${computerId}`,
+        computer_id: computerId,
+        command_id: commandId,
+        command_name: commandName,
+        completed: result.completed,
+        status: result.status,
+        output: result.output,
+        waited_seconds: Math.round(result.waitedMs / 1000),
       });
     }
 
@@ -363,7 +414,6 @@ async function handleCall(
         completed: result.completed,
         status: result.status,
         output: result.output,
-        finished_at: result.history?.DateFinished,
         waited_seconds: Math.round(result.waitedMs / 1000),
       });
     }

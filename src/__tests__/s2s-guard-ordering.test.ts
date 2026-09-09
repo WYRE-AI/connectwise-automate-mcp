@@ -3,7 +3,7 @@
  *
  * This vendor's own credential EXTRACTION (`resolveGatewayCredentials` in
  * mcp-server.ts) is a pure, synchronous header-read with no side effect —
- * but the vendored SDK (`@wyre-technology/node-connectwise-automate`) that
+ * but the vendored SDK (`@wyre-ai/node-connectwise-automate`) that
  * those credentials feed into performs a REAL outbound token-acquisition
  * call: `AuthManager.doAcquireToken()` does
  * `fetch(`${serverUrl}/cwa/api/v1/apitoken`, {method:"POST", body:{ClientId,

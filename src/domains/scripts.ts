@@ -10,7 +10,11 @@ import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
 import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
-import { containsCondition } from "../utils/odata.js";
+import {
+  andConditions,
+  containsCondition,
+  equalsCondition,
+} from "../utils/odata.js";
 import { isTransientNetworkError } from "../utils/network-errors.js";
 
 /**
@@ -76,7 +80,10 @@ function getTools(): Tool[] {
     },
     {
       name: "cwautomate_scripts_get",
-      description: "Get details for a specific script by ID",
+      description:
+        "Get details for a specific script by ID, including its folder and " +
+        "the list of parameters it accepts (useful before " +
+        "cwautomate_scripts_execute).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -198,14 +205,16 @@ async function handleCall(
       const limit = (args.limit as number) || 50;
       const skip = (args.skip as number) || 0;
 
-      // The library's `name` list param isn't a real Automate filter — the
-      // API only understands the generic `condition` expression, so a bare
-      // `?name=...` query param is silently ignored and every script comes
-      // back unfiltered. Build the same kind of `like` condition
-      // cwautomate_computers_search already uses for computer names.
+      // Automate's list routes only filter through the generic `condition`
+      // expression; a `?name=` or `?folderId=` query param is silently
+      // ignored and every script comes back unfiltered. `Folder.Id = N`
+      // mirrors the nested-ref form the API accepts for `Client.Id` on
+      // computers, but is unverified against a live instance.
       const response = await client.scripts.list({
-        folderId: args.folder_id as number | undefined,
-        condition: containsCondition("Name", args.search as string | undefined),
+        condition: andConditions(
+          equalsCondition("Folder.Id", args.folder_id as number | undefined),
+          containsCondition("Name", args.search as string | undefined)
+        ),
         pageSize: limit,
         page: toPage(skip, limit),
       });

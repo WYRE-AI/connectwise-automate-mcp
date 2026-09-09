@@ -9,6 +9,22 @@
   - The renderable tool advertises the UI via `_meta` (`ui/resourceUri`, plus the nested `ui.resourceUri` form) pointing at a new `ui://cwautomate/device-card.html` resource served as `text/html;profile=mcp-app`. The card HTML is a self-contained vite single-file bundle embedded at build time (`src/generated/device-card-html.ts`, committed), so it serves identically from stdio, Node HTTP, and the fs-less Cloudflare Workers runtime. The server now declares the `resources` capability and answers `resources/list` / `resources/read` (`src/resources.ts`).
   - The card is neutral by default (system fonts, no vendor identity, no external fetches) and brandable via `window.__BRAND__` injection or `MCP_BRAND_*` env vars (`MCP_BRAND_NAME`, `MCP_BRAND_LOGO_URL`, `MCP_BRAND_PRIMARY_COLOR`, `MCP_BRAND_ACCENT_COLOR`, `MCP_BRAND_BG`, `MCP_BRAND_TEXT`): at serve time the server replaces the card's BRAND_INJECT marker with an inline, `<`-escaped `window.__BRAND__` script, so self-hosters can theme the card without rebuilding. No brand configured = HTML served unchanged.
 
+### Changed
+
+- **Client library upgraded to `@wyre-ai/node-connectwise-automate` v3** ([node-connectwise-automate#88](https://github.com/WYRE-AI/node-connectwise-automate/pull/88)), which was re-verified route by route against ConnectWise's published Automate swagger. The package moved to the `@wyre-ai` scope; `.npmrc`, the Dockerfile and CI now register that scope on GitHub Packages.
+- **`cwautomate_computers_reboot` issues the reboot as a catalog command.** Automate has no restart route — the previous call went to a `/Computers/{id}/Restart` path that does not exist. The tool now finds a reboot/restart command in the instance's command catalog (or takes an explicit `command_id`), issues it through `CommandExecute`, and waits for the agent to report back. The `force` input is gone; it was never expressible.
+- **`cwautomate_alerts_list` filters are real now.** `computer_id` reads `GET /Computers/{id}/Alerts`; `client_id` and `severity` (a `Severity.Id`) become `condition` filters. They were previously sent as query parameters Automate ignores, so every call returned every alert. The `status` input is gone: alerts carry no status field.
+- **`cwautomate_scripts_list`'s `folder_id`** likewise moved from an ignored query parameter to a `Folder.Id = N` condition.
+- **`cwautomate_scripts_get`** returns Automate's v2 script detail (`ScriptId`, `Name`, `Description`, `Folder`, `Parameters`), because `GET /Scripts/{id}` only exists on the v2 API.
+- **`cwautomate_clients_create` / `cwautomate_clients_update`** send `phone` as `PhoneNumber`, the field Automate actually has; `Phone` was silently dropped.
+- **`cwautomate_computers_list`'s `status: "all"`** no longer sends the non-existent `includeOffline` parameter; it simply applies no online filter.
+- **`cwautomate_computers_run_command`** correlates the result by the execution id Automate returns (polling `CommandExecute?ids=`) instead of matching any newly finished history row, so a concurrent command on the same computer can no longer be mistaken for this one. `finished_at` is gone from the result; the execution row carries no such timestamp.
+- **The device card reads the spec's computer fields** (`Status`, `OperatingSystemName`/`OperatingSystemVersion`, `RemoteAgentLastContact`, `RemoteAgentVersion`, embedded `Client`/`Location`). The previous names (`IsOnline`, `OS`, `LastContact`, `AgentVersion`, `ClientId`) never existed on the wire, so the card was mostly blank.
+
+### Removed
+
+- **`cwautomate_alerts_acknowledge`.** The Automate API has no acknowledge (or close) route for alerts; the tool called a path that does not exist.
+
 ### Fixed
 
 - **`cwautomate_computers_reboot`, `cwautomate_computers_run_script`, and `cwautomate_scripts_execute` could fail with a bare `Error: terminated`.** ConnectWise Automate (or a WAF/proxy fronting a hosted instance) occasionally closes the connection mid-response instead of completing it; Node's `fetch` surfaces this as `TypeError: terminated`, and `mcp-server.ts`'s catch-all was relaying that raw message straight through as the tool result, with no context and no indication of whether the command actually went out. There's no HTTP status in this failure (the request never got a full response), so it was invisible to the client library's own retry-on-5xx logic.

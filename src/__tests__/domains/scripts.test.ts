@@ -70,14 +70,19 @@ describe("Scripts Domain Handler", () => {
 
     // Reset mock implementations to the real API response shape:
     // Automate list endpoints return a bare JSON array (issue #35).
+    // v1 `GET /Scripts` rows carry a string Id ...
     mockScriptsList.mockResolvedValue([
-      { Id: 1, Name: "Script 1" },
-      { Id: 2, Name: "Script 2" },
+      { Id: "1", Name: "Script 1" },
+      { Id: "2", Name: "Script 2" },
     ]);
+    // ... while `GET /api/v2/Scripts/{id}` returns the ScriptDetail contract,
+    // keyed by a numeric ScriptId and including the parameter list.
     mockScriptsGet.mockResolvedValue({
-      Id: 1,
+      ScriptId: 1,
       Name: "Script 1",
       Description: "Test script",
+      Folder: { ScriptFolderId: 5, Name: "Maintenance" },
+      Parameters: ["%reboot%", "%delay%"],
     });
     mockRunAndWait.mockResolvedValue([]);
     mockExecuteBatch.mockResolvedValue({
@@ -138,33 +143,55 @@ describe("Scripts Domain Handler", () => {
         expect(data.scripts).toHaveLength(2);
       });
 
-      it("should map search to a Name condition, not the library's no-op name param", async () => {
+      it("should map search to a Name condition, not a no-op name param", async () => {
         await scriptsHandler.handleCall("cwautomate_scripts_list", {
-          folder_id: 5,
           search: "install",
           limit: 25,
         });
 
-        // The library's `name` list param isn't a real Automate filter — the
-        // API only understands `condition` (see utils/odata.ts). Asserting
-        // `condition` here (and NOT `name`) is what catches the regression:
-        // https://github.com/wyre-technology/connectwise-automate-mcp bug
-        // where `search: "Reboot"` returned every script unfiltered.
+        // Automate only understands the generic `condition` expression on
+        // list routes (see utils/odata.ts); a `name` query param is silently
+        // ignored. Asserting `condition` here (and NOT `name`) is what
+        // catches the regression where `search: "Reboot"` returned every
+        // script unfiltered.
         expect(mockScriptsList).toHaveBeenCalledWith({
-          folderId: 5,
           condition: "Name like '%install%'",
           pageSize: 25,
           page: undefined,
         });
       });
 
-      it("should omit the condition entirely when no search term is given", async () => {
+      it("should fold folder_id into a Folder.Id condition, not a query param", async () => {
         await scriptsHandler.handleCall("cwautomate_scripts_list", {
           folder_id: 5,
         });
 
+        // `folderId` was never a real Automate filter either; it now has to
+        // travel through `condition` like everything else.
         expect(mockScriptsList).toHaveBeenCalledWith({
-          folderId: 5,
+          condition: "Folder.Id = 5",
+          pageSize: 50,
+          page: undefined,
+        });
+      });
+
+      it("should combine folder_id and search with and", async () => {
+        await scriptsHandler.handleCall("cwautomate_scripts_list", {
+          folder_id: 5,
+          search: "install",
+        });
+
+        expect(mockScriptsList).toHaveBeenCalledWith({
+          condition: "(Folder.Id = 5) and (Name like '%install%')",
+          pageSize: 50,
+          page: undefined,
+        });
+      });
+
+      it("should omit the condition entirely when no filter is given", async () => {
+        await scriptsHandler.handleCall("cwautomate_scripts_list", {});
+
+        expect(mockScriptsList).toHaveBeenCalledWith({
           condition: undefined,
           pageSize: 50,
           page: undefined,
@@ -185,7 +212,7 @@ describe("Scripts Domain Handler", () => {
     });
 
     describe("cwautomate_scripts_get", () => {
-      it("should get a single script", async () => {
+      it("should pass the v2 ScriptDetail through, parameters included", async () => {
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_get",
           {
@@ -194,11 +221,13 @@ describe("Scripts Domain Handler", () => {
         );
 
         expect(result.isError).toBeUndefined();
+        expect(mockScriptsGet).toHaveBeenCalledWith(1);
 
         const data = JSON.parse(result.content[0].text);
-        expect(data.Id).toBe(1);
+        expect(data.ScriptId).toBe(1);
         expect(data.Name).toBe("Script 1");
-        expect(mockScriptsGet).toHaveBeenCalledWith(1);
+        expect(data.Parameters).toEqual(["%reboot%", "%delay%"]);
+        expect(data.Folder).toEqual({ ScriptFolderId: 5, Name: "Maintenance" });
       });
     });
 

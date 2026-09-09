@@ -2,36 +2,21 @@
  * Alerts domain handler
  *
  * Provides tools for alert operations in ConnectWise Automate.
+ *
+ * Alerts are read-only in the Automate API: the published spec exposes only
+ * GET /Alerts, GET /Alerts/{id} and GET /Computers/{id}/Alerts. There is no
+ * status field and no acknowledge/close route, so this domain offers list
+ * and get only. Filtering goes through the generic `condition` expression;
+ * Automate silently ignores any other query parameter.
  */
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { AlertListParams } from "@wyre-technology/node-connectwise-automate";
 import type { DomainHandler, CallToolResult } from "../utils/types.js";
 import { getClient, type CWAutomateCredentials } from "../utils/client.js";
-import { elicitSelection } from "../utils/elicitation.js";
+import { elicitText } from "../utils/elicitation.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
-
-type AlertStatusFilter = "new" | "acknowledged" | "closed" | "all";
-
-/**
- * Map the friendly status filter to the library's status value.
- * Returns undefined for "all" (or unset), which removes the status filter.
- */
-function toAlertStatus(
-  status?: AlertStatusFilter
-): AlertListParams["status"] | undefined {
-  switch (status) {
-    case "new":
-      return "New";
-    case "acknowledged":
-      return "Acknowledged";
-    case "closed":
-      return "Closed";
-    default:
-      return undefined;
-  }
-}
+import { andConditions, equalsCondition } from "../utils/odata.js";
 
 /**
  * Get alert domain tools
@@ -41,7 +26,10 @@ function getTools(): Tool[] {
     {
       name: "cwautomate_alerts_list",
       description:
-        "List alerts in ConnectWise Automate with optional filtering.",
+        "List alerts in ConnectWise Automate with optional filtering by " +
+        "computer, client or severity. Alerts are read-only in the Automate " +
+        "API: they carry no status and cannot be acknowledged or closed " +
+        "through it.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -53,14 +41,10 @@ function getTools(): Tool[] {
             type: "number",
             description: "Filter alerts by client ID",
           },
-          status: {
-            type: "string",
-            enum: ["new", "acknowledged", "closed", "all"],
-            description: "Filter by alert status (default: all)",
-          },
           severity: {
             type: "number",
-            description: "Filter by alert severity level (1-5)",
+            description:
+              "Filter by severity ID (matches the alert's Severity.Id)",
           },
           limit: {
             type: "number",
@@ -75,31 +59,15 @@ function getTools(): Tool[] {
     },
     {
       name: "cwautomate_alerts_get",
-      description: "Get details for a specific alert by ID",
+      description:
+        "Get details for a specific alert by ID. Alerts are read-only in " +
+        "the Automate API.",
       inputSchema: {
         type: "object" as const,
         properties: {
           alert_id: {
             type: "number",
             description: "The alert ID",
-          },
-        },
-        required: ["alert_id"],
-      },
-    },
-    {
-      name: "cwautomate_alerts_acknowledge",
-      description: "Acknowledge an alert to mark it as reviewed",
-      inputSchema: {
-        type: "object" as const,
-        properties: {
-          alert_id: {
-            type: "number",
-            description: "The alert ID to acknowledge",
-          },
-          comment: {
-            type: "string",
-            description: "Optional comment to add when acknowledging",
           },
         },
         required: ["alert_id"],
@@ -124,34 +92,35 @@ async function handleCall(
       const skip = (args.skip as number) || 0;
       const severity = args.severity as number | undefined;
       const computerId = args.computer_id as number | undefined;
-      const clientId = args.client_id as number | undefined;
-      let status = args.status as AlertStatusFilter | undefined;
+      let clientId = args.client_id as number | undefined;
 
-      // If no filters provided, ask the user if they want to filter by status
-      if (!computerId && !clientId && !status && severity === undefined) {
-        const selected = await elicitSelection(
-          "Listing all alerts can return many results. Would you like to filter by status?",
-          "status",
-          [
-            { value: "all", label: "All statuses" },
-            { value: "new", label: "New only" },
-            { value: "acknowledged", label: "Acknowledged only" },
-            { value: "closed", label: "Closed only" },
-          ]
+      // If no filters provided, ask the user if they want to narrow by client
+      if (!computerId && !clientId && severity === undefined) {
+        const filterValue = await elicitText(
+          "Listing all alerts can return a large result set. Would you like to filter by a client ID? Leave blank to list all.",
+          "client_id",
+          "Enter a client ID to filter by, or leave blank for all alerts"
         );
-        if (selected) {
-          status = selected as AlertStatusFilter;
+        if (filterValue && !isNaN(Number(filterValue))) {
+          clientId = Number(filterValue);
         }
       }
 
-      const response = await client.alerts.list({
-        computerId,
-        clientId,
-        status: toAlertStatus(status),
-        severity,
+      const params = {
+        condition: andConditions(
+          equalsCondition("Client.Id", clientId),
+          equalsCondition("Severity.Id", severity)
+        ),
         pageSize: limit,
         page: toPage(skip, limit),
-      });
+      };
+
+      // A computer has its own alerts route; everything else is a condition
+      // on the global list.
+      const response =
+        computerId !== undefined
+          ? await client.alerts.listForComputer(computerId, params)
+          : await client.alerts.list(params);
 
       return listResult("alerts", response);
     }
@@ -161,21 +130,6 @@ async function handleCall(
       const alert = await client.alerts.get(alertId);
 
       return jsonResult(alert);
-    }
-
-    case "cwautomate_alerts_acknowledge": {
-      const alertId = args.alert_id as number;
-      const comment = args.comment as string | undefined;
-      const result = await client.alerts.acknowledge({
-        AlertIds: [alertId],
-        Notes: comment,
-      });
-
-      return jsonResult({
-        success: true,
-        message: `Alert ${alertId} acknowledged`,
-        result,
-      });
     }
 
     default:

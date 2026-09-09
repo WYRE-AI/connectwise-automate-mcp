@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server for ConnectWise Automate with decision tre
 ## One-Click Deployment
 
 > [!IMPORTANT]
-> **Before you click:** this server depends on `@wyre-technology/node-connectwise-automate`,
+> **Before you click:** this server depends on `@wyre-ai/node-connectwise-automate`,
 > which is hosted on the **GitHub Packages** npm registry. GitHub Packages has no
 > anonymous access — even though the package is public, every `npm install` needs a
 > token. The cloud builder runs `npm install` for you, so you must give it one, or

@@ -3,12 +3,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import type { ConnectWiseAutomateConfig } from "@wyre-technology/node-connectwise-automate";
+import type { ConnectWiseAutomateConfig } from "@wyre-ai/node-connectwise-automate";
 import { getCredentials, getClient, clearClient } from "../utils/client.js";
 
 // Mock the node-connectwise-automate library. The constructor stores the
 // resolved config so tests can assert the auth shape that was passed in.
-vi.mock("@wyre-technology/node-connectwise-automate", () => ({
+vi.mock("@wyre-ai/node-connectwise-automate", () => ({
   ConnectWiseAutomateClient: vi.fn().mockImplementation(function (config) { return ({
     config,
     computers: {
@@ -25,7 +25,7 @@ vi.mock("@wyre-technology/node-connectwise-automate", () => ({
     alerts: {
       list: vi.fn(),
       get: vi.fn(),
-      acknowledge: vi.fn(),
+      listForComputer: vi.fn(),
     },
     scripts: {
       list: vi.fn(),
