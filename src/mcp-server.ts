@@ -26,7 +26,7 @@ import {
 } from "./utils/client.js";
 import { registerResourceHandlers } from "./resources.js";
 import { isTransientNetworkError } from "./utils/network-errors.js";
-import { logToolFailure } from "./utils/log.js";
+import { logToolFailure, toolCallTiming } from "./utils/log.js";
 import { jsonResult } from "./utils/results.js";
 
 export type { CWAutomateCredentials };
@@ -206,6 +206,7 @@ export function createMcpServer(
    */
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    toolCallTiming.enterWith(Date.now());
 
     // credentialOverrides is captured in this closure per createMcpServer()
     // call (one per request in gateway mode) and threaded explicitly through

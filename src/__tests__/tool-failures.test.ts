@@ -75,7 +75,7 @@ describe("CallTool catch-all", () => {
 
     expect(stderr).toHaveBeenCalledTimes(1);
     expect(stderr).toHaveBeenCalledWith(
-      "[MCP] tool cwautomate_scripts_get failed: TypeError: terminated"
+      expect.stringMatching(/^\[MCP\] tool cwautomate_scripts_get failed: TypeError: terminated \(after \d+ms\)$/)
     );
   });
 
@@ -89,7 +89,7 @@ describe("CallTool catch-all", () => {
 
     expect(stderr).toHaveBeenCalledTimes(1);
     expect(stderr).toHaveBeenCalledWith(
-      "[MCP] tool cwautomate_scripts_get failed: Error: HTTP 403 Forbidden"
+      expect.stringMatching(/^\[MCP\] tool cwautomate_scripts_get failed: Error: HTTP 403 Forbidden \(after \d+ms\)$/)
     );
   });
 
