@@ -58,9 +58,15 @@ vi.mock("../../utils/client.js", () => ({
 // Import handler after mocking
 import { scriptsHandler } from "../../domains/scripts.js";
 
+// A failure the handler absorbs must leave exactly one line in the container
+// logs (stderr); one it rethrows is logged by mcp-server.ts's catch-all
+// instead, so the handler must stay silent to avoid a double entry.
+const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+
 describe("Scripts Domain Handler", () => {
   beforeEach(() => {
     // Clear call history
+    stderr.mockClear();
     mockScriptsList.mockClear();
     mockScriptsGet.mockClear();
     mockRunAndWait.mockClear();
@@ -75,13 +81,14 @@ describe("Scripts Domain Handler", () => {
       { Id: "1", Name: "Script 1" },
       { Id: "2", Name: "Script 2" },
     ]);
-    // ... while `GET /api/v2/Scripts/{id}` returns the ScriptDetail contract,
-    // keyed by a numeric ScriptId and including the parameter list.
+    // ... and so does the v1 `GET /Scripts/{id}` row, which also carries the
+    // parameter list. (The v2 ScriptDetail route is not served by every
+    // hosted instance, so the tool no longer uses it.)
     mockScriptsGet.mockResolvedValue({
-      ScriptId: 1,
+      Id: "1",
       Name: "Script 1",
-      Description: "Test script",
-      Folder: { ScriptFolderId: 5, Name: "Maintenance" },
+      Comments: "Test script",
+      Folder: { Id: "5", Name: "Maintenance" },
       Parameters: ["%reboot%", "%delay%"],
     });
     mockRunAndWait.mockResolvedValue([]);
@@ -212,7 +219,7 @@ describe("Scripts Domain Handler", () => {
     });
 
     describe("cwautomate_scripts_get", () => {
-      it("should pass the v2 ScriptDetail through, parameters included", async () => {
+      it("should pass the v1 script row through, parameters included", async () => {
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_get",
           {
@@ -224,10 +231,10 @@ describe("Scripts Domain Handler", () => {
         expect(mockScriptsGet).toHaveBeenCalledWith(1);
 
         const data = JSON.parse(result.content[0].text);
-        expect(data.ScriptId).toBe(1);
+        expect(data.Id).toBe("1");
         expect(data.Name).toBe("Script 1");
         expect(data.Parameters).toEqual(["%reboot%", "%delay%"]);
-        expect(data.Folder).toEqual({ ScriptFolderId: 5, Name: "Maintenance" });
+        expect(data.Folder).toEqual({ Id: "5", Name: "Maintenance" });
       });
     });
 
@@ -351,6 +358,11 @@ describe("Scripts Domain Handler", () => {
         expect(data.summary).toContain("interrupted");
         expect(data.summary).toContain("cwautomate_scripts_history");
         expect(data.computer_ids).toEqual([1, 2]);
+
+        expect(stderr).toHaveBeenCalledTimes(1);
+        expect(stderr.mock.calls[0][0]).toMatch(
+          /^\[MCP\] tool cwautomate_scripts_execute failed: TypeError: terminated \(connection to ConnectWise Automate terminated/
+        );
       });
 
       it("should not swallow other errors as if they were a transient network failure", async () => {
@@ -362,6 +374,7 @@ describe("Scripts Domain Handler", () => {
             computer_ids: [1],
           })
         ).rejects.toThrow("Validation error");
+        expect(stderr).not.toHaveBeenCalled();
       });
 
       it("should retry the launch exactly once on a transient network failure when wait is false", async () => {

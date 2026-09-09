@@ -15,6 +15,7 @@ import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
 import { buildDeviceCard, DEVICE_CARD_META } from "../card.builder.js";
 import { escapeConditionValue } from "../utils/odata.js";
 import { isTransientNetworkError } from "../utils/network-errors.js";
+import { logToolFailure } from "../utils/log.js";
 
 /**
  * Get computer domain tools
@@ -313,6 +314,12 @@ async function handleCall(
         // the reboot was queued, and re-issuing could reboot the machine
         // twice — so report that honestly rather than retry.
         if (!isTransientNetworkError(error)) throw error;
+        logToolFailure(
+          "cwautomate_computers_reboot",
+          error,
+          "connection to ConnectWise Automate terminated while issuing the " +
+            "command or polling for its result"
+        );
         return jsonResult({
           computer_id: computerId,
           command_id: commandId,
@@ -362,6 +369,12 @@ async function handleCall(
         // instead of guessing either way. See isTransientNetworkError's doc
         // comment for what this failure looks like and why it happens.
         if (!isTransientNetworkError(error)) throw error;
+        logToolFailure(
+          "cwautomate_computers_run_script",
+          error,
+          "connection to ConnectWise Automate terminated while launching " +
+            "the script or polling for its result"
+        );
         return jsonResult({
           computer_id: computerId,
           script_id: scriptId,
@@ -398,14 +411,39 @@ async function handleCall(
       const timeoutSeconds =
         (args.timeout_seconds as number | undefined) ?? DEFAULT_WAIT_SECONDS;
 
-      const result = await client.computers.executeCommandAndWait(
-        computerId,
-        {
-          Command: { Id: commandId },
-          Parameters: (args.parameters as string[] | undefined) ?? [],
-        },
-        { timeoutMs: timeoutSeconds * 1000 }
-      );
+      let result;
+      try {
+        result = await client.computers.executeCommandAndWait(
+          computerId,
+          {
+            Command: { Id: commandId },
+            Parameters: (args.parameters as string[] | undefined) ?? [],
+          },
+          { timeoutMs: timeoutSeconds * 1000 }
+        );
+      } catch (error) {
+        // Same shape as reboot above: one request issues the command and
+        // several more poll for its outcome, so a transient drop leaves it
+        // unknown whether the command went out. Re-issuing could run it
+        // twice, so report that honestly rather than retry.
+        if (!isTransientNetworkError(error)) throw error;
+        logToolFailure(
+          "cwautomate_computers_run_command",
+          error,
+          "connection to ConnectWise Automate terminated while issuing the " +
+            "command or polling for its result"
+        );
+        return jsonResult({
+          computer_id: computerId,
+          command_id: commandId,
+          completed: false,
+          message:
+            "Connection to ConnectWise Automate was interrupted while " +
+            "waiting for the result. The command may still have been " +
+            "issued — check the computer's command history in Automate " +
+            "rather than assuming it failed.",
+        });
+      }
 
       return jsonResult({
         computer_id: computerId,

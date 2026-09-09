@@ -30,6 +30,7 @@ vi.mock("@wyre-ai/node-connectwise-automate", () => ({
     scripts: {
       list: vi.fn(),
       get: vi.fn(),
+      getDetail: vi.fn(),
       execute: vi.fn(),
     },
     locations: {

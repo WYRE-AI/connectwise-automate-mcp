@@ -56,9 +56,15 @@ vi.mock("../../utils/client.js", () => ({
 // Import handler after mocking
 import { computersHandler } from "../../domains/computers.js";
 
+// A failure the handler absorbs must leave exactly one line in the container
+// logs (stderr); one it rethrows is logged by mcp-server.ts's catch-all
+// instead, so the handler must stay silent to avoid a double entry.
+const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+
 describe("Computers Domain Handler", () => {
   beforeEach(() => {
     // Clear call history
+    stderr.mockClear();
     mockComputersList.mockClear();
     mockComputersGet.mockClear();
     mockScriptsRunAndWait.mockClear();
@@ -372,6 +378,11 @@ describe("Computers Domain Handler", () => {
         expect(data.command_id).toBe("17");
         expect(data.message).toContain("interrupted");
         expect(data.message).toContain("cwautomate_computers_get");
+
+        expect(stderr).toHaveBeenCalledTimes(1);
+        expect(stderr.mock.calls[0][0]).toMatch(
+          /^\[MCP\] tool cwautomate_computers_reboot failed: TypeError: terminated \(connection to ConnectWise Automate terminated/
+        );
       });
 
       it("should not mask a non-network error", async () => {
@@ -385,6 +396,7 @@ describe("Computers Domain Handler", () => {
           })
         ).rejects.toThrow("Access forbidden");
         expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
+        expect(stderr).not.toHaveBeenCalled();
       });
     });
 
@@ -462,6 +474,11 @@ describe("Computers Domain Handler", () => {
         expect(data.completed).toBe(false);
         expect(data.message).toContain("interrupted");
         expect(data.message).toContain("cwautomate_scripts_history");
+
+        expect(stderr).toHaveBeenCalledTimes(1);
+        expect(stderr.mock.calls[0][0]).toMatch(
+          /^\[MCP\] tool cwautomate_computers_run_script failed: TypeError: terminated \(connection to ConnectWise Automate terminated/
+        );
       });
 
       it("should not swallow other errors as if they were a transient network failure", async () => {
@@ -473,6 +490,7 @@ describe("Computers Domain Handler", () => {
             script_id: 100,
           })
         ).rejects.toThrow("Validation error");
+        expect(stderr).not.toHaveBeenCalled();
       });
     });
 
@@ -502,6 +520,51 @@ describe("Computers Domain Handler", () => {
           { Command: { Id: "2" }, Parameters: ["ipconfig /all"] },
           { timeoutMs: 90000 }
         );
+      });
+
+      it("should report honestly, not retry, when waiting is interrupted by a transient network failure", async () => {
+        mockExecuteCommandAndWait.mockRejectedValue(new TypeError("terminated"));
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_run_command",
+          { computer_id: 1, command_id: "2", parameters: ["ipconfig /all"] }
+        );
+
+        // The customer-reported case: this used to escape to the catch-all
+        // as a bare `Error: terminated`. Issuing is one request and polling
+        // several more, so the command may or may not have gone out.
+        expect(result.isError).toBeUndefined();
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toEqual({
+          computer_id: 1,
+          command_id: "2",
+          completed: false,
+          message: expect.stringContaining("interrupted"),
+        });
+        expect(data.message).toContain("command history");
+
+        expect(stderr).toHaveBeenCalledTimes(1);
+        expect(stderr.mock.calls[0][0]).toMatch(
+          /^\[MCP\] tool cwautomate_computers_run_command failed: TypeError: terminated \(connection to ConnectWise Automate terminated/
+        );
+        expect(stderr.mock.calls[0][0]).not.toContain("ipconfig");
+      });
+
+      it("should not mask a non-network error", async () => {
+        mockExecuteCommandAndWait.mockRejectedValue(
+          new Error("Access forbidden")
+        );
+
+        await expect(
+          computersHandler.handleCall("cwautomate_computers_run_command", {
+            computer_id: 1,
+            command_id: "2",
+          })
+        ).rejects.toThrow("Access forbidden");
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
+        expect(stderr).not.toHaveBeenCalled();
       });
     });
 
