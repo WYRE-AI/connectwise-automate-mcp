@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Fixed
+
+- **`Error: terminated` no longer leaks from any tool.** The earlier fix below only covered the tools that poll for a result; `cwautomate_scripts_get` and `cwautomate_computers_run_command` still handed undici's raw text back through `mcp-server.ts`'s catch-all. Every tool now answers a dropped connection with a structured, non-error result — `{ tool, completed: false, interrupted: true, message }` — saying the request may or may not have been processed and to verify in Automate before retrying. `cwautomate_computers_run_command` gets the same treatment as `cwautomate_computers_run_script`: an honest `completed: false` pointing at the computer's command history in Automate, since the command may already have been issued.
+- **Failed tool calls are logged.** Nothing about a failed call reached the container logs, so customers saw errors while operators saw nothing. Every failure now writes one line to stderr, `[MCP] tool <name> failed: <ErrorName>: <message>`, carrying the tool name and error class only; arguments and credentials are never logged. The tools that handle a dropped connection locally (`reboot`, `run_script`, `run_command`, `scripts_execute`) add a note that the connection was terminated while launching or polling for the result. See `src/utils/log.ts`.
+- **`cwautomate_scripts_get` reads the v1 `GET /Scripts/{id}` route again.** 2.0.0 moved it to the v2 `GET /api/v2/Scripts/{id}` route, which not every hosted Automate instance serves — one terminates the request outright, so every call failed with `Error: terminated`. The tool now returns the v1 catalog row (`Id` as a string, `Name`, `Folder`, `Comments`, `Parameters`, the `Is*Script` flags); script steps exist only on v2 and are not exposed. Requires the `@wyre-ai/node-connectwise-automate` release that restores `scripts.get()` to v1 and adds `scripts.getDetail()` for the v2 contract.
+
+## [2.0.0] - 2026-09-09
+
 ### Added
 
 - **Script runs now wait for their result instead of reporting "queued".** `cwautomate_scripts_execute` and `cwautomate_computers_run_script` launch the script, then poll Automate's script history until it reaches a terminal state, returning the per-computer verdict (`Success` / `Failure` / `Information`) and Automate's `DiagnosticMessage` — the only failure reason the API exposes. Automate has no synchronous run and hands back no job ID, so the outcome has to be recovered from history; runs are correlated by history-row identity against a pre-launch baseline, which is immune to clock skew and cannot latch onto a run that was already in flight. A run that outlasts `timeout_seconds` (default 90) returns `completed: false` and keeps running server-side. Pass `wait: false` for the old fire-and-forget behaviour.
@@ -31,9 +39,6 @@
 
 ### Fixed
 
-- **`Error: terminated` no longer leaks from any tool.** The earlier fix below only covered the tools that poll for a result; `cwautomate_scripts_get` and `cwautomate_computers_run_command` still handed undici's raw text back through `mcp-server.ts`'s catch-all. Every tool now answers a dropped connection with a structured, non-error result — `{ tool, completed: false, interrupted: true, message }` — saying the request may or may not have been processed and to verify in Automate before retrying. `cwautomate_computers_run_command` gets the same treatment as `cwautomate_computers_run_script`: an honest `completed: false` pointing at the computer's command history in Automate, since the command may already have been issued.
-- **Failed tool calls are logged.** Nothing about a failed call reached the container logs, so customers saw errors while operators saw nothing. Every failure now writes one line to stderr, `[MCP] tool <name> failed: <ErrorName>: <message>`, carrying the tool name and error class only; arguments and credentials are never logged. The tools that handle a dropped connection locally (`reboot`, `run_script`, `run_command`, `scripts_execute`) add a note that the connection was terminated while launching or polling for the result. See `src/utils/log.ts`.
-- **`cwautomate_scripts_get` reads the v1 `GET /Scripts/{id}` route again.** 2.0.0 moved it to the v2 `GET /api/v2/Scripts/{id}` route, which not every hosted Automate instance serves — one terminates the request outright, so every call failed with `Error: terminated`. The tool now returns the v1 catalog row (`Id` as a string, `Name`, `Folder`, `Comments`, `Parameters`, the `Is*Script` flags); script steps exist only on v2 and are not exposed. Requires the `@wyre-ai/node-connectwise-automate` release that restores `scripts.get()` to v1 and adds `scripts.getDetail()` for the v2 contract.
 - **`cwautomate_computers_reboot`, `cwautomate_computers_run_script`, and `cwautomate_scripts_execute` could fail with a bare `Error: terminated`.** ConnectWise Automate (or a WAF/proxy fronting a hosted instance) occasionally closes the connection mid-response instead of completing it; Node's `fetch` surfaces this as `TypeError: terminated`, and `mcp-server.ts`'s catch-all was relaying that raw message straight through as the tool result, with no context and no indication of whether the command actually went out. There's no HTTP status in this failure (the request never got a full response), so it was invisible to the client library's own retry-on-5xx logic.
   - `cwautomate_computers_reboot` and the fire-and-forget (`wait: false`) path of `cwautomate_scripts_execute` are single, non-idempotent writes — these now retry exactly once on this specific failure, which is undici's documented mitigation for it.
   - `cwautomate_computers_run_script` and the default (`wait: true`) path of `cwautomate_scripts_execute` launch a script and then poll for its result over several requests; retrying the whole operation risks running the script a second time, so these instead return an honest `completed: false` result pointing at `cwautomate_scripts_history` rather than guessing at success or failure.
@@ -68,13 +73,11 @@
 
 ## [1.3.3](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.3.2...v1.3.3) (2026-04-06)
 
-
 ### Bug Fixes
 
 * per-request MCP Server+Transport for gateway compatibility ([3a16ac3](https://github.com/wyre-technology/connectwise-automate-mcp/commit/3a16ac3a5edad2d5e58a3db69c6c3d8ca570887d))
 
 ## [1.3.2](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.3.1...v1.3.2) (2026-03-31)
-
 
 ### Bug Fixes
 
@@ -82,13 +85,11 @@
 
 ## [1.3.1](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.3.0...v1.3.1) (2026-03-10)
 
-
 ### Bug Fixes
 
 * **lint:** use const for locationId (never reassigned) ([6a23f80](https://github.com/wyre-technology/connectwise-automate-mcp/commit/6a23f8051d78837e0a5223d5e91f9f52307becb9))
 
 # [1.3.0](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.2.5...v1.3.0) (2026-03-10)
-
 
 ### Features
 
@@ -96,13 +97,11 @@
 
 ## [1.2.5](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.2.4...v1.2.5) (2026-03-02)
 
-
 ### Bug Fixes
 
 * **ci:** use Node 22 in release job for semantic-release v25 compatibility ([ab5fd65](https://github.com/wyre-technology/connectwise-automate-mcp/commit/ab5fd65c7760016f9fdec001e71297017f8fd3e8))
 
 ## [1.2.4](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.2.3...v1.2.4) (2026-03-02)
-
 
 ### Bug Fixes
 
@@ -111,13 +110,11 @@
 
 ## [1.2.3](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.2.2...v1.2.3) (2026-02-26)
 
-
 ### Bug Fixes
 
 * **ci:** move Discord notification into release workflow ([162ea77](https://github.com/wyre-technology/connectwise-automate-mcp/commit/162ea77269fb745e01b0c38e2a83017203ef0322))
 
 ## [1.2.2](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.2.1...v1.2.2) (2026-02-18)
-
 
 ### Bug Fixes
 
@@ -125,20 +122,17 @@
 
 ## [1.2.1](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.2.0...v1.2.1) (2026-02-18)
 
-
 ### Bug Fixes
 
 * use npm install in Dockerfile for lock file compatibility ([afe02b3](https://github.com/wyre-technology/connectwise-automate-mcp/commit/afe02b340d6b8dfd60e8b89625cc619114d2e422))
 
 # [1.2.0](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.1.0...v1.2.0) (2026-02-18)
 
-
 ### Bug Fixes
 
 * **ci:** fix release workflow failures ([3107f4c](https://github.com/wyre-technology/connectwise-automate-mcp/commit/3107f4c4ed7abb3e32bb6cbb55836ce390b40e35))
 * **docker:** drop arm64 platform to fix QEMU build failures ([29951e6](https://github.com/wyre-technology/connectwise-automate-mcp/commit/29951e6cec869b9ef93695f1639cc5806ac74a18))
 * use npm install instead of npm ci for lock file compatibility ([2c0134a](https://github.com/wyre-technology/connectwise-automate-mcp/commit/2c0134abd794e71313cec9203f4f89f67dd99648))
-
 
 ### Features
 
@@ -147,7 +141,6 @@
 * add MCPB pack script ([396e797](https://github.com/wyre-technology/connectwise-automate-mcp/commit/396e7978cb78ae15aa8851f8bb7d63e85952cf6d))
 
 # [1.1.0](https://github.com/wyre-technology/connectwise-automate-mcp/compare/v1.0.0...v1.1.0) (2026-02-17)
-
 
 ### Bug Fixes
 
@@ -162,7 +155,6 @@
 * revert .npmrc to [@asachs01](https://github.com/asachs01) scope for GitHub Packages registry ([4ee14cf](https://github.com/wyre-technology/connectwise-automate-mcp/commit/4ee14cfb76cafd9b10d545f4f097c86830765de6))
 * revert peerDependencies to [@asachs01](https://github.com/asachs01) scope (package not published under [@wyre-technology](https://github.com/wyre-technology)) ([9292efc](https://github.com/wyre-technology/connectwise-automate-mcp/commit/9292efc6d9726f93d34bbbd196e592f098db54ee))
 
-
 ### Features
 
 * add mcpb packaging support ([891251c](https://github.com/wyre-technology/connectwise-automate-mcp/commit/891251c7b38dccb1833fbea0d8c3bd20903d8f85))
@@ -173,12 +165,10 @@
 
 # 1.0.0 (2026-02-13)
 
-
 ### Bug Fixes
 
 * **ci:** Add GitHub Packages auth to test job for scoped dependency ([24f6717](https://github.com/wyre-technology/connectwise-automate-mcp/commit/24f671752b30411d2998916e25185f1c459fb2eb))
 * **ci:** Fix workflow scope and regenerate lock file ([e534672](https://github.com/wyre-technology/connectwise-automate-mcp/commit/e5346724761eba88af14ff24b381d176564a26c8))
-
 
 ### Features
 
@@ -213,4 +203,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive Vitest test suite
 - Docker support
 
-[Unreleased]: https://github.com/wyre-technology/connectwise-automate-mcp/compare/HEAD
+[Unreleased]: https://github.com/WYRE-AI/connectwise-automate-mcp/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/WYRE-AI/connectwise-automate-mcp/compare/v1.8.5...v2.0.0
