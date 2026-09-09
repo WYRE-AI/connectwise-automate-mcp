@@ -8,7 +8,7 @@
  * unchanged.
  */
 
-import type { ConnectWiseAutomateClient } from "@wyre-technology/node-connectwise-automate";
+import type { ConnectWiseAutomateClient } from "@wyre-ai/node-connectwise-automate";
 
 export const DEVICE_CARD_RESOURCE_URI = "ui://cwautomate/device-card.html";
 
@@ -89,18 +89,37 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-/** Name from an embedded `{ Id, Name }` reference (Computer.Client / .Location). */
-function embeddedName(ref: unknown): string | undefined {
-  return ref !== null && typeof ref === "object"
-    ? asString((ref as { Name?: unknown }).Name)
-    : undefined;
+/**
+ * Label for an embedded `{ Id, Name }` reference (Computer.Client /
+ * Computer.Location): the embedded name when present, otherwise a
+ * best-effort `lookup(Id)`, falling back to `#id`. The spec's Computer has
+ * no flat ClientId/LocationId, so the ref is the only handle we have.
+ */
+async function resolveLabel(
+  ref: unknown,
+  lookup: (id: number) => Promise<{ Name?: string }>
+): Promise<string | undefined> {
+  if (ref === null || typeof ref !== "object") return undefined;
+  const { Id, Name } = ref as { Id?: unknown; Name?: unknown };
+
+  const name = asString(Name);
+  if (name) return name;
+  if (typeof Id !== "number") return undefined;
+
+  try {
+    const found = asString((await lookup(Id)).Name);
+    if (found) return found;
+  } catch {
+    // Best-effort: fall through to the #id label.
+  }
+  return `#${Id}`;
 }
 
 /**
- * Build the renderable card from a cwautomate_computers_get payload. Client
- * and location labels prefer the names the Automate API embeds on the
- * computer; missing names are resolved best-effort through the existing
- * clients/locations lookups, falling back to `#id`.
+ * Build the renderable card from a cwautomate_computers_get payload, which is
+ * shaped like the swagger's LabTech.Models.Computer. Client and location
+ * labels prefer the names embedded on the computer; missing names are
+ * resolved best-effort through the existing clients/locations lookups.
  */
 export async function buildDeviceCard(
   computer: Record<string, unknown>,
@@ -115,49 +134,34 @@ export async function buildDeviceCard(
     name: String(computer.ComputerName),
   };
 
-  if (typeof computer.IsOnline === "boolean") {
-    card.status = computer.IsOnline ? "Online" : "Offline";
-  }
+  // Online state is a string ("Online"/"Offline"), not a boolean.
+  const status = asString(computer.Status);
+  if (status) card.status = status;
   const type = asString(computer.Type);
   if (type) card.type = type;
 
-  // Client label: embedded name -> clients.get lookup (best-effort) -> #id.
-  let clientLabel = embeddedName(computer.Client);
-  if (!clientLabel && typeof computer.ClientId === "number") {
-    try {
-      clientLabel = asString((await client.clients.get(computer.ClientId)).Name);
-    } catch {
-      // Best-effort: fall through to the #id label.
-    }
-    clientLabel = clientLabel ?? `#${computer.ClientId}`;
-  }
+  const clientLabel = await resolveLabel(computer.Client, (id) =>
+    client.clients.get(id)
+  );
   if (clientLabel) card.client = clientLabel;
-
-  // Location label: embedded name -> locations.get lookup (best-effort) -> #id.
-  let locationLabel = embeddedName(computer.Location);
-  if (!locationLabel && typeof computer.LocationId === "number") {
-    try {
-      locationLabel = asString((await client.locations.get(computer.LocationId)).Name);
-    } catch {
-      // Best-effort: fall through to the #id label.
-    }
-    locationLabel = locationLabel ?? `#${computer.LocationId}`;
-  }
+  const locationLabel = await resolveLabel(computer.Location, (id) =>
+    client.locations.get(id)
+  );
   if (locationLabel) card.location = locationLabel;
 
-  const os = asString(computer.OS);
-  const osVersion = asString(computer.OSVersion);
+  const os = asString(computer.OperatingSystemName);
+  const osVersion = asString(computer.OperatingSystemVersion);
   if (os) card.os = osVersion ? `${os} ${osVersion}` : os;
 
   const lastUser = asString(computer.LastUserName);
   if (lastUser) card.lastUser = lastUser;
-  const lastContact = asString(computer.LastContact);
+  const lastContact = asString(computer.RemoteAgentLastContact);
   if (lastContact) card.lastContact = lastContact;
   const localIp = asString(computer.LocalIPAddress);
   if (localIp) card.localIp = localIp;
   const serialNumber = asString(computer.SerialNumber);
   if (serialNumber) card.serialNumber = serialNumber;
-  const agentVersion = asString(computer.AgentVersion);
+  const agentVersion = asString(computer.RemoteAgentVersion);
   if (agentVersion) card.agentVersion = agentVersion;
 
   return card;

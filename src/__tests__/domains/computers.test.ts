@@ -8,7 +8,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const {
   mockComputersList,
   mockComputersGet,
-  mockComputersRestart,
   mockScriptsRunAndWait,
   mockCommands,
   mockExecuteCommandAndWait,
@@ -16,7 +15,6 @@ const {
 } = vi.hoisted(() => {
   const mockComputersList = vi.fn();
   const mockComputersGet = vi.fn();
-  const mockComputersRestart = vi.fn();
   const mockScriptsRunAndWait = vi.fn();
   const mockCommands = vi.fn();
   const mockExecuteCommandAndWait = vi.fn();
@@ -25,7 +23,6 @@ const {
     computers: {
       list: mockComputersList,
       get: mockComputersGet,
-      restart: mockComputersRestart,
       commands: mockCommands,
       executeCommandAndWait: mockExecuteCommandAndWait,
     },
@@ -37,7 +34,6 @@ const {
   return {
     mockComputersList,
     mockComputersGet,
-    mockComputersRestart,
     mockScriptsRunAndWait,
     mockCommands,
     mockExecuteCommandAndWait,
@@ -65,7 +61,6 @@ describe("Computers Domain Handler", () => {
     // Clear call history
     mockComputersList.mockClear();
     mockComputersGet.mockClear();
-    mockComputersRestart.mockClear();
     mockScriptsRunAndWait.mockClear();
     mockCommands.mockClear();
     mockExecuteCommandAndWait.mockClear();
@@ -79,9 +74,8 @@ describe("Computers Domain Handler", () => {
     mockComputersGet.mockResolvedValue({
       Id: 1,
       ComputerName: "Computer 1",
-      ClientId: 5,
+      Client: { Id: 5, Name: "Client 5" },
     });
-    mockComputersRestart.mockResolvedValue(undefined);
     mockScriptsRunAndWait.mockResolvedValue([
       {
         computerId: 1,
@@ -91,13 +85,14 @@ describe("Computers Domain Handler", () => {
         waitedMs: 5000,
       },
     ]);
+    // The catalog is server-defined; a reboot is just one entry in it.
     mockCommands.mockResolvedValue([
       { Id: "2", Name: "Command Prompt", Level: 1 },
+      { Id: "17", Name: "Reboot", Level: 2 },
     ]);
     mockExecuteCommandAndWait.mockResolvedValue({
       completed: true,
       execution: { Id: 4711, Status: "Success" },
-      history: { Id: 4711, DateFinished: "2024-01-15T10:35:04Z" },
       status: "Success",
       output: "Windows IP Configuration",
       waitedMs: 4000,
@@ -191,6 +186,29 @@ describe("Computers Domain Handler", () => {
           isOnline: true,
         });
       });
+
+      it("should map status=offline to isOnline=false", async () => {
+        await computersHandler.handleCall("cwautomate_computers_list", {
+          client_id: 5,
+          status: "offline",
+        });
+
+        expect(mockComputersList.mock.calls[0][0]).toMatchObject({
+          isOnline: false,
+        });
+      });
+
+      it("should apply no online-state filter for status=all", async () => {
+        await computersHandler.handleCall("cwautomate_computers_list", {
+          client_id: 5,
+          status: "all",
+        });
+
+        const params = mockComputersList.mock.calls[0][0];
+        expect(params).toMatchObject({ clientId: 5, pageSize: 50 });
+        expect(params).not.toHaveProperty("isOnline");
+        expect(params).not.toHaveProperty("includeOffline");
+      });
     });
 
     describe("cwautomate_computers_get", () => {
@@ -248,35 +266,14 @@ describe("Computers Domain Handler", () => {
     });
 
     describe("cwautomate_computers_reboot", () => {
-      it("should reboot a computer via restart", async () => {
-        const result = await computersHandler.handleCall(
-          "cwautomate_computers_reboot",
-          {
-            computer_id: 1,
-          }
-        );
-
-        expect(result.isError).toBeUndefined();
-
-        const data = JSON.parse(result.content[0].text);
-        expect(data.success).toBe(true);
-        expect(data.message).toContain("Reboot command sent");
-        expect(mockComputersRestart).toHaveBeenCalledWith(1, undefined);
-      });
-
-      it("should pass the force parameter to restart", async () => {
-        await computersHandler.handleCall("cwautomate_computers_reboot", {
-          computer_id: 1,
-          force: true,
+      it("should issue the catalog's reboot command and wait for its result", async () => {
+        mockExecuteCommandAndWait.mockResolvedValue({
+          completed: true,
+          execution: { Id: 4712, Status: "Success" },
+          status: "Success",
+          output: "Reboot queued",
+          waitedMs: 6000,
         });
-
-        expect(mockComputersRestart).toHaveBeenCalledWith(1, true);
-      });
-
-      it("should retry exactly once on a transient network failure and still report success", async () => {
-        mockComputersRestart
-          .mockRejectedValueOnce(new TypeError("terminated"))
-          .mockResolvedValueOnce(undefined);
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
@@ -284,36 +281,110 @@ describe("Computers Domain Handler", () => {
         );
 
         expect(result.isError).toBeUndefined();
+
         const data = JSON.parse(result.content[0].text);
-        expect(data.success).toBe(true);
-        expect(mockComputersRestart).toHaveBeenCalledTimes(2);
+        expect(data).toEqual({
+          computer_id: 1,
+          command_id: "17",
+          command_name: "Reboot",
+          completed: true,
+          status: "Success",
+          output: "Reboot queued",
+          waited_seconds: 6,
+        });
+        expect(mockCommands).toHaveBeenCalledTimes(1);
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
+          1,
+          { Command: { Id: "17" }, Parameters: [] },
+          { timeoutMs: 90000 }
+        );
       });
 
-      it("should surface a second consecutive transient network failure rather than retry forever", async () => {
-        mockComputersRestart.mockRejectedValue(new TypeError("terminated"));
+      it("should match catalog entries named 'restart' as well as 'reboot'", async () => {
+        mockCommands.mockResolvedValue([
+          { Id: "2", Name: "Command Prompt" },
+          { Id: "21", Name: "Restart Computer" },
+        ]);
 
-        // handleCall() doesn't itself catch-and-format errors into an
-        // isError result — that's mcp-server.ts's job (the outer catch-all
-        // that produces the "Error: terminated" text customers saw). At
-        // this layer, a failure that survives the retry should simply
-        // propagate so that wrapper can format it.
-        await expect(
-          computersHandler.handleCall("cwautomate_computers_reboot", {
-            computer_id: 1,
-          })
-        ).rejects.toThrow("terminated");
-        expect(mockComputersRestart).toHaveBeenCalledTimes(2);
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_reboot",
+          { computer_id: 1 }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.command_id).toBe("21");
+        expect(data.command_name).toBe("Restart Computer");
       });
 
-      it("should not retry (or mask) a non-network error", async () => {
-        mockComputersRestart.mockRejectedValue(new Error("Access forbidden"));
+      it("should use an explicit command_id without consulting the catalog", async () => {
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_reboot",
+          { computer_id: 1, command_id: "42" }
+        );
+
+        expect(result.isError).toBeUndefined();
+        expect(mockCommands).not.toHaveBeenCalled();
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
+          1,
+          { Command: { Id: "42" }, Parameters: [] },
+          { timeoutMs: 90000 }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.command_id).toBe("42");
+        expect(data.completed).toBe(true);
+      });
+
+      it("should return an error listing the catalog when no reboot command exists", async () => {
+        mockCommands.mockResolvedValue([
+          { Id: "2", Name: "Command Prompt" },
+          { Id: "3", Name: "Shutdown" },
+        ]);
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_reboot",
+          { computer_id: 1 }
+        );
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("command_id");
+        expect(result.content[0].text).toContain("Command Prompt");
+        expect(result.content[0].text).toContain("Shutdown");
+        expect(mockExecuteCommandAndWait).not.toHaveBeenCalled();
+      });
+
+      it("should report honestly, not retry, when waiting is interrupted by a transient network failure", async () => {
+        mockExecuteCommandAndWait.mockRejectedValue(new TypeError("terminated"));
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_reboot",
+          { computer_id: 1 }
+        );
+
+        // Issuing the command is one request and polling is several more, so
+        // a mid-poll drop leaves it unknown whether the reboot was queued.
+        // Re-issuing could reboot the machine twice; say so instead.
+        expect(result.isError).toBeUndefined();
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.completed).toBe(false);
+        expect(data.command_id).toBe("17");
+        expect(data.message).toContain("interrupted");
+        expect(data.message).toContain("cwautomate_computers_get");
+      });
+
+      it("should not mask a non-network error", async () => {
+        mockExecuteCommandAndWait.mockRejectedValue(
+          new Error("Access forbidden")
+        );
 
         await expect(
           computersHandler.handleCall("cwautomate_computers_reboot", {
             computer_id: 1,
           })
         ).rejects.toThrow("Access forbidden");
-        expect(mockComputersRestart).toHaveBeenCalledTimes(1);
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -417,8 +488,15 @@ describe("Computers Domain Handler", () => {
         );
 
         const data = JSON.parse(result.content[0].text);
-        expect(data.completed).toBe(true);
-        expect(data.output).toBe("Windows IP Configuration");
+        expect(data).toEqual({
+          computer_id: 1,
+          command_id: "2",
+          execution_id: 4711,
+          completed: true,
+          status: "Success",
+          output: "Windows IP Configuration",
+          waited_seconds: 4,
+        });
         expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
           1,
           { Command: { Id: "2" }, Parameters: ["ipconfig /all"] },
@@ -435,7 +513,7 @@ describe("Computers Domain Handler", () => {
         );
 
         const data = JSON.parse(result.content[0].text);
-        expect(data.total).toBe(1);
+        expect(data.total).toBe(2);
         expect(data.commands[0].Name).toBe("Command Prompt");
       });
     });

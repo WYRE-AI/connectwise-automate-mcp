@@ -8,7 +8,7 @@
  *
  * There is no HTTP status to react to in this case — no complete response
  * was ever received, so the client library's own 5xx-retry logic
- * (`executeRequest`'s retry-once-on-500, in `@wyre-technology/node-connectwise-automate`)
+ * (`executeRequest`'s retry-once-on-500, in `@wyre-ai/node-connectwise-automate`)
  * never runs; that logic only sees requests that got a response at all.
  * Undici's documented behavior for this exact failure is
  * `TypeError: terminated` (see https://github.com/nodejs/undici/issues/1489),

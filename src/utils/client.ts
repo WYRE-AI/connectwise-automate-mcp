@@ -12,7 +12,7 @@
 import {
   ConnectWiseAutomateClient,
   type ConnectWiseAutomateConfig,
-} from "@wyre-technology/node-connectwise-automate";
+} from "@wyre-ai/node-connectwise-automate";
 
 /**
  * Authentication method for ConnectWise Automate.

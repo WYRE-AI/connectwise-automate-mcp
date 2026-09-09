@@ -49,23 +49,25 @@ import { createMcpServer } from "../mcp-server.js";
 
 const RENDERABLE_TOOLS = ["cwautomate_computers_get"];
 
-/** A realistic cwautomate_computers_get payload (PascalCase, per the API). */
+/**
+ * A realistic cwautomate_computers_get payload, shaped like the swagger's
+ * LabTech.Models.Computer: client/location are embedded refs (no flat
+ * ClientId/LocationId), and online state is the `Status` string.
+ */
 const computer = {
   Id: 3117,
   ComputerName: "ACME-DC01",
-  ClientId: 12,
   Client: { Id: 12, Name: "Acme Corp" },
-  LocationId: 3,
-  Location: { Id: 3, Name: "Main Office", ClientId: 12 },
+  Location: { Id: 3, Name: "Main Office" },
   Type: "Server",
-  OS: "Windows Server 2022",
-  OSVersion: "21H2",
+  OperatingSystemName: "Windows Server 2022",
+  OperatingSystemVersion: "21H2",
   LastUserName: "ACME\\administrator",
-  IsOnline: true,
-  LastContact: "2026-07-17T09:00:00Z",
+  Status: "Online",
+  RemoteAgentLastContact: "2026-07-17T09:00:00Z",
   LocalIPAddress: "10.0.0.5",
   SerialNumber: "VMware-42",
-  AgentVersion: "240.352",
+  RemoteAgentVersion: "240.352",
 };
 
 async function getAllTools(): Promise<Tool[]> {
@@ -243,7 +245,15 @@ describe("MCP Apps device card", () => {
     });
 
     it("resolves missing labels through the existing clients/locations lookups", async () => {
-      const bare = { Id: 1, ComputerName: "WS-07", ClientId: 12, LocationId: 3 };
+      // Refs that carry an Id but no Name — the flat ClientId/LocationId
+      // fields do not exist on the spec's Computer, so Id-only refs are the
+      // only lookup path.
+      const bare = {
+        Id: 1,
+        ComputerName: "WS-07",
+        Client: { Id: 12 },
+        Location: { Id: 3 },
+      };
       const card = await buildDeviceCard(bare, mockClient as never);
       expect(card?.client).toBe("Acme Corp");
       expect(card?.location).toBe("Main Office");
@@ -254,7 +264,12 @@ describe("MCP Apps device card", () => {
     it("falls back to #id labels when the lookups fail (best-effort)", async () => {
       mockClientsGet.mockRejectedValue(new Error("CWA 500"));
       mockLocationsGet.mockRejectedValue(new Error("CWA 500"));
-      const bare = { Id: 1, ComputerName: "WS-07", ClientId: 12, LocationId: 3 };
+      const bare = {
+        Id: 1,
+        ComputerName: "WS-07",
+        Client: { Id: 12 },
+        Location: { Id: 3 },
+      };
       const card = await buildDeviceCard(bare, mockClient as never);
       expect(card).toMatchObject({
         id: 1,
@@ -264,12 +279,33 @@ describe("MCP Apps device card", () => {
       });
     });
 
-    it("maps IsOnline=false to an Offline status", async () => {
+    it("ignores the legacy flat ClientId/LocationId fields", async () => {
+      const legacy = { Id: 1, ComputerName: "WS-07", ClientId: 12, LocationId: 3 };
+      const card = await buildDeviceCard(legacy, mockClient as never);
+      expect(card?.client).toBeUndefined();
+      expect(card?.location).toBeUndefined();
+      expect(mockClientsGet).not.toHaveBeenCalled();
+      expect(mockLocationsGet).not.toHaveBeenCalled();
+    });
+
+    it("passes the Status string through (Offline)", async () => {
       const card = await buildDeviceCard(
-        { ...computer, IsOnline: false },
+        { ...computer, Status: "Offline" },
         mockClient as never
       );
       expect(card?.status).toBe("Offline");
+    });
+
+    it("omits status when the API sends none", async () => {
+      const { Status: _omitted, ...noStatus } = computer;
+      const card = await buildDeviceCard(noStatus, mockClient as never);
+      expect(card).not.toHaveProperty("status");
+    });
+
+    it("uses the OS name alone when no version is reported", async () => {
+      const { OperatingSystemVersion: _omitted, ...noVersion } = computer;
+      const card = await buildDeviceCard(noVersion, mockClient as never);
+      expect(card?.os).toBe("Windows Server 2022");
     });
 
     it("returns null for payloads that are not a computer", async () => {

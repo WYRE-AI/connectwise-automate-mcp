@@ -30,15 +30,10 @@ function asEnvelope(response: unknown): {
 /**
  * Extract the array of items from a ConnectWise Automate list response.
  *
- * The Automate REST API returns list endpoints as a bare JSON array, even
- * though the client library's types model them as `{ Data, TotalRecords }`.
- * Accept either shape (and return an empty array for anything unexpected) so a
- * type/runtime mismatch can never crash a tool call (issue #35).
- *
- * This is a compensating shim; the root cause is the library's response types +
- * unchecked cast, tracked upstream in
- * WYRE-AI/node-connectwise-automate#38. Once that lands this can return
- * to trusting the library's typed shape.
+ * The Automate REST API returns list endpoints as a bare JSON array, and since
+ * @wyre-ai/node-connectwise-automate v3 the client library types them that way
+ * too. The `{ Data, TotalRecords }` envelope is still accepted so a proxy or an
+ * older library that wraps the array can never crash a tool call (issue #35).
  */
 export function listItems<T = unknown>(response: unknown): T[] {
   if (Array.isArray(response)) {

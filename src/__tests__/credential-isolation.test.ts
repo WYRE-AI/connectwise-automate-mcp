@@ -19,7 +19,7 @@ const MockConnectWiseAutomateClient = vi.fn().mockImplementation(function (
   Object.assign(this as object, { config });
 });
 
-vi.mock("@wyre-technology/node-connectwise-automate", () => ({
+vi.mock("@wyre-ai/node-connectwise-automate", () => ({
   ConnectWiseAutomateClient: MockConnectWiseAutomateClient,
 }));
 

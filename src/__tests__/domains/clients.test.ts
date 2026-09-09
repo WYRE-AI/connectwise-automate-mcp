@@ -225,7 +225,7 @@ describe("Clients Domain Handler", () => {
           State: "Test State",
           ZipCode: "12345",
           Country: "USA",
-          Phone: "555-1234",
+          PhoneNumber: "555-1234",
         });
       });
     });
@@ -259,7 +259,7 @@ describe("Clients Domain Handler", () => {
           State: undefined,
           ZipCode: undefined,
           Country: undefined,
-          Phone: undefined,
+          PhoneNumber: undefined,
         });
       });
     });

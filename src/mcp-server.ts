@@ -37,7 +37,7 @@ const domainDescriptions: Record<DomainName, string> = {
   clients:
     "Company management - list and get client/company information and relationships",
   alerts:
-    "Alert monitoring - view and acknowledge system alerts and notifications",
+    "Alert monitoring - view system alerts and notifications (read-only in the Automate API)",
   scripts:
     "Script management - list, get, and execute automation scripts (DESTRUCTIVE operations available)",
 };

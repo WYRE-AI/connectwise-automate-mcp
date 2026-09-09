@@ -175,7 +175,7 @@ async function handleCall(
         State: args.state as string | undefined,
         ZipCode: args.zip as string | undefined,
         Country: args.country as string | undefined,
-        Phone: args.phone as string | undefined,
+        PhoneNumber: args.phone as string | undefined,
       });
 
       return jsonResult(newClient);
@@ -189,7 +189,7 @@ async function handleCall(
         State: args.state as string | undefined,
         ZipCode: args.zip as string | undefined,
         Country: args.country as string | undefined,
-        Phone: args.phone as string | undefined,
+        PhoneNumber: args.phone as string | undefined,
       });
 
       return jsonResult(updatedClient);

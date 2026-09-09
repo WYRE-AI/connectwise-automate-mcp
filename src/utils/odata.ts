@@ -26,3 +26,29 @@ export function containsCondition(
   if (!value) return undefined;
   return `${field} like '%${escapeConditionValue(value)}%'`;
 }
+
+/**
+ * Build a `<field> = <value>` condition for a numeric id (e.g.
+ * `Client.Id = 42`), or `undefined` when no value is given.
+ */
+export function equalsCondition(
+  field: string,
+  value?: number
+): string | undefined {
+  if (value === undefined) return undefined;
+  return `${field} = ${value}`;
+}
+
+/**
+ * Combine condition clauses with `and`. Missing/empty clauses are dropped, a
+ * lone clause is returned as-is, and two or more are each parenthesised and
+ * joined: `(a) and (b)`. Returns `undefined` when nothing is left to filter by.
+ */
+export function andConditions(
+  ...clauses: Array<string | undefined>
+): string | undefined {
+  const present = clauses.filter((clause): clause is string => !!clause);
+  if (present.length === 0) return undefined;
+  if (present.length === 1) return present[0];
+  return present.map((clause) => `(${clause})`).join(" and ");
+}
