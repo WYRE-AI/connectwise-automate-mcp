@@ -44,10 +44,10 @@
   "homepage": "https://github.com/WYRE-AI/connectwise-automate-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@wyre-ai/node-connectwise-automate": "^3.0.0"
+    "@wyre-ai/node-connectwise-automate": "^4.0.0"
   },
   "peerDependencies": {
-    "@wyre-ai/node-connectwise-automate": "^3.0.0"
+    "@wyre-ai/node-connectwise-automate": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "@wyre-ai/node-connectwise-automate": {
