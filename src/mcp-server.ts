@@ -25,6 +25,9 @@ import {
   type CWAutomateCredentials,
 } from "./utils/client.js";
 import { registerResourceHandlers } from "./resources.js";
+import { isTransientNetworkError } from "./utils/network-errors.js";
+import { logToolFailure, toolCallTiming } from "./utils/log.js";
+import { jsonResult } from "./utils/results.js";
 
 export type { CWAutomateCredentials };
 
@@ -203,6 +206,7 @@ export function createMcpServer(
    */
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    toolCallTiming.enterWith(Date.now());
 
     // credentialOverrides is captured in this closure per createMcpServer()
     // call (one per request in gateway mode) and threaded explicitly through
@@ -292,6 +296,27 @@ export function createMcpServer(
         isError: true,
       };
     } catch (error) {
+      // Every failure that gets this far leaves one line in the container
+      // logs (tool name and error class only, never arguments or
+      // credentials), so operators can see what the customer saw.
+      logToolFailure(name, error);
+
+      // A dropped connection carries no HTTP status and no response body, so
+      // whether Automate processed the request is genuinely unknown. Say
+      // exactly that, as a structured result, instead of relaying undici's
+      // bare "terminated" as an error.
+      if (isTransientNetworkError(error)) {
+        return jsonResult({
+          tool: name,
+          completed: false,
+          interrupted: true,
+          message:
+            "Connection to ConnectWise Automate was interrupted before a " +
+            "response arrived. The request may or may not have been " +
+            "processed — verify in Automate before retrying.",
+        });
+      }
+
       const message = error instanceof Error ? error.message : String(error);
       return {
         content: [{ type: "text", text: `Error: ${message}` }],

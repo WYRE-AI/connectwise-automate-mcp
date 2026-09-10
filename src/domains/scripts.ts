@@ -16,6 +16,7 @@ import {
   equalsCondition,
 } from "../utils/odata.js";
 import { isTransientNetworkError } from "../utils/network-errors.js";
+import { logToolFailure } from "../utils/log.js";
 
 /**
  * Convert the tool's key/value parameter object into the Key/Value pair array
@@ -81,9 +82,10 @@ function getTools(): Tool[] {
     {
       name: "cwautomate_scripts_get",
       description:
-        "Get details for a specific script by ID, including its folder and " +
-        "the list of parameters it accepts (useful before " +
-        "cwautomate_scripts_execute).",
+        "Get a script's catalog metadata by ID: its Name, Folder, Comments, " +
+        "the Is*Script kind flags, and the list of Parameters it accepts " +
+        "(useful before cwautomate_scripts_execute). Note the script's Id " +
+        "is a string in this response.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -292,6 +294,12 @@ async function handleCall(
         // some (or all) targets — retrying could run it a second time, so
         // report that honestly instead of guessing either way.
         if (!isTransientNetworkError(error)) throw error;
+        logToolFailure(
+          "cwautomate_scripts_execute",
+          error,
+          "connection to ConnectWise Automate terminated while launching " +
+            "the script or polling for its result"
+        );
         return jsonResult({
           script_id: scriptId,
           summary:
