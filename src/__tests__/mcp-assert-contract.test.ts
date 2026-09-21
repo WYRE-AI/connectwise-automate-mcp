@@ -75,5 +75,29 @@ describe("mcp-assert baseline contract", () => {
     })) as { isError?: boolean; content?: { text?: string }[] };
 
     expect(result.isError).toBe(true);
+    expect(result.content?.[0]?.text).toMatch(/not registered/i);
+  });
+
+  it("dispatches every advertised tool, including cwautomate_commands_list", async () => {
+    const client = await connectClient();
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name);
+
+    // Registered in the computers domain, but the name does not start with
+    // cwautomate_computers_. A prefix router advertises it and then answers
+    // tools/call with "Unknown tool".
+    expect(names).toContain("cwautomate_commands_list");
+
+    const skipped = new Set(["cwautomate_navigate", "cwautomate_status"]);
+    for (const name of names) {
+      if (skipped.has(name)) continue;
+      const result = (await client.callTool({
+        name,
+        arguments: {},
+      })) as { isError?: boolean; content?: { text?: string }[] };
+      const text = result.content?.[0]?.text ?? "";
+      expect(text, name).not.toMatch(/Unknown tool/i);
+      expect(text, name).toMatch(/credentials/i);
+    }
   });
 });

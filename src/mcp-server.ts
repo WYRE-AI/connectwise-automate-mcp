@@ -87,6 +87,16 @@ const statusTool: Tool = {
 const domainToolMap = new Map<DomainName, Tool[]>();
 
 /**
+ * Map from tool name to the domain that registered it.
+ *
+ * Dispatch must use this, not a name prefix. `cwautomate_commands_list` lives
+ * in the computers domain but does not start with `cwautomate_computers_`, so
+ * a prefix check advertised the tool in tools/list and then answered
+ * tools/call with "Unknown tool".
+ */
+const toolDomainMap = new Map<string, DomainName>();
+
+/**
  * All domain tools, collected once at startup
  */
 let allDomainTools: Tool[] | null = null;
@@ -108,12 +118,23 @@ async function getAllDomainTools(): Promise<Tool[]> {
       const handler = await getDomainHandler(domain);
       const domainTools = handler.getTools();
       domainToolMap.set(domain, domainTools);
+      for (const tool of domainTools) {
+        toolDomainMap.set(tool.name, domain);
+      }
     }
     tools.push(...domainToolMap.get(domain)!);
   }
 
   allDomainTools = tools;
   return tools;
+}
+
+/**
+ * Domain that owns a registered tool, or undefined when the name was never
+ * advertised. Callers must have loaded the tool set first.
+ */
+function domainForTool(name: string): DomainName | undefined {
+  return toolDomainMap.get(name);
 }
 
 /**
@@ -265,32 +286,25 @@ export function createMcpServer(
         };
       }
 
-      // Route to appropriate domain handler
+      // Route by the name the domain registered. A prefix check drops any
+      // tool whose name does not start with `cwautomate_<domain>_`
+      // (`cwautomate_commands_list` is the one that shipped that way).
       const toolArgs = (args ?? {}) as Record<string, unknown>;
+      await getAllDomainTools();
+      const domain = domainForTool(name);
 
-      if (name.startsWith("cwautomate_computers_")) {
-        const handler = await getDomainHandler("computers");
-        return await handler.handleCall(name, toolArgs, credentialOverrides);
-      }
-      if (name.startsWith("cwautomate_clients_")) {
-        const handler = await getDomainHandler("clients");
-        return await handler.handleCall(name, toolArgs, credentialOverrides);
-      }
-      if (name.startsWith("cwautomate_alerts_")) {
-        const handler = await getDomainHandler("alerts");
-        return await handler.handleCall(name, toolArgs, credentialOverrides);
-      }
-      if (name.startsWith("cwautomate_scripts_")) {
-        const handler = await getDomainHandler("scripts");
+      if (domain) {
+        const handler = await getDomainHandler(domain);
         return await handler.handleCall(name, toolArgs, credentialOverrides);
       }
 
-      // Unknown tool
+      // Unknown tool. This is a server-side miss, not a gateway allowlist
+      // decision — do not send the caller to conduit__my_access.
       return {
         content: [
           {
             type: "text",
-            text: `Unknown tool: ${name}. Call conduit__my_access to see which tools are available to you.`,
+            text: `Unknown tool: ${name}. It is not registered on this server.`,
           },
         ],
         isError: true,
