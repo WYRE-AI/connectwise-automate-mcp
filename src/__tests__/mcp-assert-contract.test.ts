@@ -21,10 +21,21 @@
  * an MCP client (and therefore mcp-assert) would.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../mcp-server.js";
+
+const CREDENTIAL_ENV_KEYS = [
+  "CW_AUTOMATE_SERVER_URL",
+  "CW_AUTOMATE_CLIENT_ID",
+  "CW_AUTOMATE_USERNAME",
+  "CW_AUTOMATE_PASSWORD",
+  "CW_AUTOMATE_2FA_CODE",
+  "CW_AUTOMATE_AUTH_METHOD",
+] as const;
+
+const savedCredentialEnv: Partial<Record<(typeof CREDENTIAL_ENV_KEYS)[number], string>> = {};
 
 /** The canary tool named in .github/workflows/mcp-assert.yml. */
 const CANARY_TOOL = "cwautomate_scripts_list";
@@ -45,6 +56,27 @@ async function connectClient(): Promise<Client> {
 }
 
 describe("mcp-assert baseline contract", () => {
+  // mcp-assert runs the server with no credentials. Ambient CW_AUTOMATE_*
+  // values would let handlers build a client and call Automate, so this
+  // suite clears them for the duration of each test and restores them
+  // afterward (afterEach still runs when a test fails).
+  beforeEach(() => {
+    for (const key of CREDENTIAL_ENV_KEYS) {
+      const value = process.env[key];
+      if (value !== undefined) savedCredentialEnv[key] = value;
+      else delete savedCredentialEnv[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of CREDENTIAL_ENV_KEYS) {
+      const value = savedCredentialEnv[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
   it("registers the canary tool upfront (not gated behind navigation)", async () => {
     const client = await connectClient();
     const { tools } = await client.listTools();
