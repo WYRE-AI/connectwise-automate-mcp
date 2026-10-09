@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ConnectWiseAutomateAmbiguousRequestError } from "@wyre-ai/node-connectwise-automate";
 
 // Create mock functions using vi.hoisted
 const {
@@ -398,6 +399,51 @@ describe("Computers Domain Handler", () => {
         expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
         expect(stderr).not.toHaveBeenCalled();
       });
+
+      it("returns the execution id and poll errors when the reboot does not finish", async () => {
+        mockExecuteCommandAndWait.mockResolvedValue({
+          completed: false,
+          execution: { Id: 8801, Status: "Pending" },
+          status: "Pending",
+          waitedMs: 90000,
+          pollErrors: 3,
+        });
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_reboot",
+          { computer_id: 1 }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.completed).toBe(false);
+        expect(data.command_id).toBe("17");
+        expect(data.execution_id).toBe(8801);
+        expect(data.poll_errors).toBe(3);
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
+      });
+
+      it("surfaces an ambiguous launch error without issuing the reboot again", async () => {
+        mockExecuteCommandAndWait.mockRejectedValue(
+          new ConnectWiseAutomateAmbiguousRequestError(
+            "Connection interrupted during POST /cwa/api/v1/Computers/1/CommandExecute. The command may or may not have been queued (computer id 1, command id 17). The request was not retried because a retry can run it twice.",
+            { cause: new TypeError("terminated"), id: 42 }
+          )
+        );
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_reboot",
+          { computer_id: 1 }
+        );
+
+        expect(result.isError).toBeUndefined();
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
+        const data = JSON.parse(result.content[0].text);
+        expect(data.completed).toBe(false);
+        expect(data.execution_id).toBe(42);
+        expect(data.message).toContain("not retried");
+        expect(data.message).toContain("may or may not have been queued");
+        expect(data.message).toContain("cwautomate_computers_get");
+      });
     });
 
     describe("cwautomate_computers_run_script", () => {
@@ -565,6 +611,29 @@ describe("Computers Domain Handler", () => {
         ).rejects.toThrow("Access forbidden");
         expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
         expect(stderr).not.toHaveBeenCalled();
+      });
+
+      it("returns the execution id and poll errors when the command does not finish", async () => {
+        mockExecuteCommandAndWait.mockResolvedValue({
+          completed: false,
+          execution: { Id: 4711, Status: "Pending" },
+          status: "Pending",
+          output: "",
+          waitedMs: 90000,
+          pollErrors: 2,
+        });
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_run_command",
+          { computer_id: 1, command_id: "2" }
+        );
+
+        const data = JSON.parse(result.content[0].text);
+        expect(data.completed).toBe(false);
+        expect(data.execution_id).toBe(4711);
+        expect(data.poll_errors).toBe(2);
+        expect(data.status).toBe("Pending");
+        expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
       });
     });
 
