@@ -12,6 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ConnectWiseAutomateAmbiguousRequestError } from "@wyre-ai/node-connectwise-automate";
 
 const { mockScriptsGet, mockClient } = vi.hoisted(() => {
   const mockScriptsGet = vi.fn();
@@ -77,6 +78,30 @@ describe("CallTool catch-all", () => {
     expect(stderr).toHaveBeenCalledWith(
       expect.stringMatching(/^\[MCP\] tool cwautomate_scripts_get failed: TypeError: terminated \(after \d+ms\)$/)
     );
+  });
+
+  it("surfaces an ambiguous POST failure with the client's message", async () => {
+    mockScriptsGet.mockRejectedValue(
+      new ConnectWiseAutomateAmbiguousRequestError(
+        "Connection interrupted during POST /cwa/api/v1/Batch/ScriptExecute. The command may or may not have been queued. The request was not retried because a retry can run it twice.",
+        { cause: new TypeError("terminated"), id: 99 }
+      )
+    );
+
+    const result = await callTool("cwautomate_scripts_get", { script_id: 1 });
+
+    expect(result.isError).toBeUndefined();
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toEqual({
+      tool: "cwautomate_scripts_get",
+      completed: false,
+      interrupted: true,
+      ambiguous: true,
+      execution_id: 99,
+      message: expect.stringContaining("not retried"),
+    });
+    expect(data.message).toContain("may or may not have been queued");
+    expect(data.message).not.toContain("verify in Automate before retrying");
   });
 
   it("keeps the isError result for any other failure, and logs it too", async () => {

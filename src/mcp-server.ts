@@ -25,7 +25,10 @@ import {
   type CWAutomateCredentials,
 } from "./utils/client.js";
 import { registerResourceHandlers } from "./resources.js";
-import { isTransientNetworkError } from "./utils/network-errors.js";
+import {
+  ConnectWiseAutomateAmbiguousRequestError,
+  isTransientNetworkError,
+} from "./utils/network-errors.js";
 import { logToolFailure, toolCallTiming } from "./utils/log.js";
 import { jsonResult } from "./utils/results.js";
 
@@ -314,6 +317,22 @@ export function createMcpServer(
       // logs (tool name and error class only, never arguments or
       // credentials), so operators can see what the customer saw.
       logToolFailure(name, error);
+
+      // A POST/PATCH socket error is ambiguous: Automate may already have
+      // accepted it, and the client did not retry. Keep that message instead
+      // of collapsing it into the generic dropped-connection text. Check this
+      // before isTransientNetworkError — the original socket error is on
+      // `cause`, so the generic check would also match.
+      if (error instanceof ConnectWiseAutomateAmbiguousRequestError) {
+        return jsonResult({
+          tool: name,
+          completed: false,
+          interrupted: true,
+          ambiguous: true,
+          ...(error.id !== undefined ? { execution_id: error.id } : {}),
+          message: error.message,
+        });
+      }
 
       // A dropped connection carries no HTTP status and no response body, so
       // whether Automate processed the request is genuinely unknown. Say

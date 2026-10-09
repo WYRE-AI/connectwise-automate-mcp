@@ -15,7 +15,10 @@ import {
   containsCondition,
   equalsCondition,
 } from "../utils/odata.js";
-import { isTransientNetworkError } from "../utils/network-errors.js";
+import {
+  ConnectWiseAutomateAmbiguousRequestError,
+  isDroppedConnection,
+} from "../utils/network-errors.js";
 import { logToolFailure } from "../utils/log.js";
 
 /**
@@ -253,11 +256,9 @@ async function handleCall(
       };
 
       if (!wait) {
-        // A single, non-idempotent write: retry exactly once, and only for
-        // the transport-level failure isTransientNetworkError identifies
-        // (the request never got a response at all). See that function's
-        // doc comment for why the client library's own retry logic doesn't
-        // cover this case.
+        // POST /Batch/ScriptExecute is not idempotent. The client already
+        // refuses to retry POST; retrying here can run the script twice when
+        // the first request reached Automate and only the response was lost.
         let batch;
         try {
           batch = await client.scripts.executeBatch({
@@ -265,10 +266,34 @@ async function handleCall(
             EntityIds: computerIds,
           });
         } catch (error) {
-          if (!isTransientNetworkError(error)) throw error;
-          batch = await client.scripts.executeBatch({
-            ...request,
-            EntityIds: computerIds,
+          if (!isDroppedConnection(error)) throw error;
+          logToolFailure(
+            "cwautomate_scripts_execute",
+            error,
+            "connection to ConnectWise Automate terminated while launching " +
+              "the script; the launch was not retried"
+          );
+          const ambiguous =
+            error instanceof ConnectWiseAutomateAmbiguousRequestError
+              ? error
+              : undefined;
+          return jsonResult({
+            script_id: scriptId,
+            computer_ids: computerIds,
+            waited: false,
+            completed: false,
+            interrupted: true,
+            ambiguous: true,
+            ...(ambiguous?.id !== undefined
+              ? { execution_id: ambiguous.id }
+              : {}),
+            message: ambiguous
+              ? `${ambiguous.message} Check cwautomate_scripts_history for each computer before launching again.`
+              : "Connection to ConnectWise Automate was interrupted while " +
+                "launching the script. It may or may not have been queued. " +
+                "The request was not retried because a retry can run it " +
+                "twice. Check cwautomate_scripts_history for each computer " +
+                "before launching again.",
           });
         }
 
@@ -293,20 +318,24 @@ async function handleCall(
         // we genuinely don't know whether the script already launched for
         // some (or all) targets — retrying could run it a second time, so
         // report that honestly instead of guessing either way.
-        if (!isTransientNetworkError(error)) throw error;
+        if (!isDroppedConnection(error)) throw error;
         logToolFailure(
           "cwautomate_scripts_execute",
           error,
           "connection to ConnectWise Automate terminated while launching " +
             "the script or polling for its result"
         );
+        const guidance =
+          `Connection to ConnectWise Automate was interrupted while ` +
+          `waiting for ${computerIds.length} target(s). The script may ` +
+          `still have launched — check cwautomate_scripts_history for ` +
+          `each computer rather than assuming it failed.`;
         return jsonResult({
           script_id: scriptId,
           summary:
-            `Connection to ConnectWise Automate was interrupted while ` +
-            `waiting for ${computerIds.length} target(s). The script may ` +
-            `still have launched — check cwautomate_scripts_history for ` +
-            `each computer rather than assuming it failed.`,
+            error instanceof ConnectWiseAutomateAmbiguousRequestError
+              ? `${error.message} ${guidance}`
+              : guidance,
           computer_ids: computerIds,
         });
       }

@@ -5,7 +5,10 @@
  */
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { ComputerListParams } from "@wyre-ai/node-connectwise-automate";
+import type {
+  CommandRunResult,
+  ComputerListParams,
+} from "@wyre-ai/node-connectwise-automate";
 import type { DomainHandler, CallToolResult } from "../utils/types.js";
 import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { elicitText } from "../utils/elicitation.js";
@@ -14,8 +17,52 @@ import { jsonResult, listResult } from "../utils/results.js";
 import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
 import { buildDeviceCard, DEVICE_CARD_META } from "../card.builder.js";
 import { escapeConditionValue } from "../utils/odata.js";
-import { isTransientNetworkError } from "../utils/network-errors.js";
+import {
+  ConnectWiseAutomateAmbiguousRequestError,
+  isDroppedConnection,
+} from "../utils/network-errors.js";
 import { logToolFailure } from "../utils/log.js";
+
+/**
+ * Fields a caller needs to re-read a command that did not reach a terminal
+ * status. The execution id is the one Automate returned at launch; poll_errors
+ * counts status reads that still failed after the client's own GET retries.
+ * Absent when the command finished, so a successful result stays unchanged.
+ */
+function unfinishedCommand(result: CommandRunResult): {
+  execution_id?: number;
+  poll_errors?: number;
+} {
+  if (result.completed) return {};
+  return {
+    execution_id: result.execution.Id,
+    poll_errors: result.pollErrors ?? 0,
+  };
+}
+
+/**
+ * Prefer the client's ambiguous-request message (it already says the call
+ * was not retried) and keep the tool-specific "check before assuming it
+ * failed" guidance after it.
+ */
+function droppedConnectionMessage(error: unknown, guidance: string): string {
+  if (error instanceof ConnectWiseAutomateAmbiguousRequestError) {
+    return `${error.message} ${guidance}`;
+  }
+  return guidance;
+}
+
+function droppedExecutionId(
+  error: unknown
+): { execution_id: number | string } | Record<string, never> {
+  if (
+    error instanceof ConnectWiseAutomateAmbiguousRequestError &&
+    error.id !== undefined
+  ) {
+    return { execution_id: error.id };
+  }
+  return {};
+}
 
 /**
  * Get computer domain tools
@@ -98,7 +145,9 @@ function getTools(): Tool[] {
         "command (POST /Computers/{id}/CommandExecute). By default the " +
         "first catalog entry named like 'Reboot' or 'Restart' is used; pass " +
         "command_id (from cwautomate_commands_list) to choose a specific " +
-        "one. The API user's command level caps which commands may be issued.",
+        "one. The API user's command level caps which commands may be issued. " +
+        "A result with completed: false includes execution_id and poll_errors " +
+        "so the queued reboot can be re-read instead of issued again.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -157,7 +206,9 @@ function getTools(): Tool[] {
         "The command_id must come from cwautomate_commands_list; free-text " +
         "commands are not accepted by Automate. Note that the API user's " +
         "command level and the group-level 'Send Commands' grant silently " +
-        "cap which commands may be issued.",
+        "cap which commands may be issued. A result with completed: false " +
+        "includes execution_id and poll_errors so that execution can be " +
+        "re-read instead of issued again.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -309,11 +360,10 @@ async function handleCall(
           { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
         );
       } catch (error) {
-        // Issuing the command is one request and polling for its outcome is
-        // several more. A transient drop mid-poll leaves it unknown whether
-        // the reboot was queued, and re-issuing could reboot the machine
-        // twice — so report that honestly rather than retry.
-        if (!isTransientNetworkError(error)) throw error;
+        // The launch POST is not retried: a socket error means the reboot
+        // may already be queued. Status-poll drops come back as
+        // completed:false with the execution id, not as a throw.
+        if (!isDroppedConnection(error)) throw error;
         logToolFailure(
           "cwautomate_computers_reboot",
           error,
@@ -325,11 +375,14 @@ async function handleCall(
           command_id: commandId,
           command_name: commandName,
           completed: false,
-          message:
+          ...droppedExecutionId(error),
+          message: droppedConnectionMessage(
+            error,
             "Connection to ConnectWise Automate was interrupted while " +
-            "waiting for the result. The reboot may still have been queued " +
-            "— check the computer's status with cwautomate_computers_get " +
-            "rather than assuming it failed.",
+              "waiting for the result. The reboot may still have been queued " +
+              "— check the computer's status with cwautomate_computers_get " +
+              "rather than assuming it failed."
+          ),
         });
       }
 
@@ -341,6 +394,7 @@ async function handleCall(
         status: result.status,
         output: result.output,
         waited_seconds: Math.round(result.waitedMs / 1000),
+        ...unfinishedCommand(result),
       });
     }
 
@@ -366,9 +420,9 @@ async function handleCall(
         // several requests. If a transient network failure hits mid-poll,
         // we genuinely don't know whether the script already launched —
         // retrying could run it a second time, so report that honestly
-        // instead of guessing either way. See isTransientNetworkError's doc
-        // comment for what this failure looks like and why it happens.
-        if (!isTransientNetworkError(error)) throw error;
+        // instead of guessing either way. See network-errors.ts for what this
+        // failure looks like and why it happens.
+        if (!isDroppedConnection(error)) throw error;
         logToolFailure(
           "cwautomate_computers_run_script",
           error,
@@ -379,11 +433,13 @@ async function handleCall(
           computer_id: computerId,
           script_id: scriptId,
           completed: false,
-          message:
+          message: droppedConnectionMessage(
+            error,
             "Connection to ConnectWise Automate was interrupted while " +
-            "waiting for the result. The script may still have launched " +
-            "— check cwautomate_scripts_history for this computer rather " +
-            "than assuming it failed.",
+              "waiting for the result. The script may still have launched " +
+              "— check cwautomate_scripts_history for this computer rather " +
+              "than assuming it failed."
+          ),
         });
       }
 
@@ -422,11 +478,10 @@ async function handleCall(
           { timeoutMs: timeoutSeconds * 1000 }
         );
       } catch (error) {
-        // Same shape as reboot above: one request issues the command and
-        // several more poll for its outcome, so a transient drop leaves it
-        // unknown whether the command went out. Re-issuing could run it
-        // twice, so report that honestly rather than retry.
-        if (!isTransientNetworkError(error)) throw error;
+        // The launch POST is not retried: a socket error means the command
+        // may already be queued. Status-poll drops come back as
+        // completed:false with the execution id, not as a throw.
+        if (!isDroppedConnection(error)) throw error;
         logToolFailure(
           "cwautomate_computers_run_command",
           error,
@@ -437,11 +492,14 @@ async function handleCall(
           computer_id: computerId,
           command_id: commandId,
           completed: false,
-          message:
+          ...droppedExecutionId(error),
+          message: droppedConnectionMessage(
+            error,
             "Connection to ConnectWise Automate was interrupted while " +
-            "waiting for the result. The command may still have been " +
-            "issued — check the computer's command history in Automate " +
-            "rather than assuming it failed.",
+              "waiting for the result. The command may still have been " +
+              "issued — check the computer's command history in Automate " +
+              "rather than assuming it failed."
+          ),
         });
       }
 
@@ -453,6 +511,7 @@ async function handleCall(
         status: result.status,
         output: result.output,
         waited_seconds: Math.round(result.waitedMs / 1000),
+        ...unfinishedCommand(result),
       });
     }
 

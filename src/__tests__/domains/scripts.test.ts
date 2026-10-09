@@ -3,6 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ConnectWiseAutomateAmbiguousRequestError } from "@wyre-ai/node-connectwise-automate";
 
 // Create mock functions using vi.hoisted
 const {
@@ -377,13 +378,13 @@ describe("Scripts Domain Handler", () => {
         expect(stderr).not.toHaveBeenCalled();
       });
 
-      it("should retry the launch exactly once on a transient network failure when wait is false", async () => {
-        mockExecuteBatch
-          .mockRejectedValueOnce(new TypeError("terminated"))
-          .mockResolvedValueOnce({
-            ScriptResults: [{ EntityId: 1 }],
-            ContainsUnsuccessfulResults: false,
-          });
+      it("does not retry POST /Batch/ScriptExecute when the launch is ambiguous", async () => {
+        mockExecuteBatch.mockRejectedValue(
+          new ConnectWiseAutomateAmbiguousRequestError(
+            "Connection interrupted during POST /cwa/api/v1/Batch/ScriptExecute. The command may or may not have been queued (script id 1, entity ids 1). The request was not retried because a retry can run it twice.",
+            { cause: new TypeError("terminated"), id: 77 }
+          )
+        );
 
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_execute",
@@ -391,13 +392,39 @@ describe("Scripts Domain Handler", () => {
         );
 
         expect(result.isError).toBeUndefined();
+        expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
         const data = JSON.parse(result.content[0].text);
         expect(data.waited).toBe(false);
-        expect(mockExecuteBatch).toHaveBeenCalledTimes(2);
+        expect(data.completed).toBe(false);
+        expect(data.ambiguous).toBe(true);
+        expect(data.interrupted).toBe(true);
+        expect(data.execution_id).toBe(77);
+        expect(data.computer_ids).toEqual([1]);
+        expect(data.message).toContain("may or may not have been queued");
+        expect(data.message).toContain("not retried");
+        expect(data.message).toContain("cwautomate_scripts_history");
+        expect(stderr).toHaveBeenCalledTimes(1);
       });
 
-      it("should surface a second consecutive transient network failure when wait is false", async () => {
+      it("does not retry a raw socket error on a fire-and-forget launch", async () => {
         mockExecuteBatch.mockRejectedValue(new TypeError("terminated"));
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_execute",
+          { script_id: 1, computer_ids: [1], wait: false }
+        );
+
+        expect(result.isError).toBeUndefined();
+        expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
+        const data = JSON.parse(result.content[0].text);
+        expect(data.ambiguous).toBe(true);
+        expect(data.message).toContain("interrupted");
+        expect(data.message).toContain("not retried");
+        expect(data.message).toContain("twice");
+      });
+
+      it("does not mask a non-network error on a fire-and-forget launch", async () => {
+        mockExecuteBatch.mockRejectedValue(new Error("Validation error"));
 
         await expect(
           scriptsHandler.handleCall("cwautomate_scripts_execute", {
@@ -405,8 +432,9 @@ describe("Scripts Domain Handler", () => {
             computer_ids: [1],
             wait: false,
           })
-        ).rejects.toThrow("terminated");
-        expect(mockExecuteBatch).toHaveBeenCalledTimes(2);
+        ).rejects.toThrow("Validation error");
+        expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
+        expect(stderr).not.toHaveBeenCalled();
       });
     });
 
