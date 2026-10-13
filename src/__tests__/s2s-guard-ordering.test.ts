@@ -23,8 +23,10 @@
  * every other fetch (notably this test's own loopback call into the
  * server under test) passes through to the real fetch.
  */
+import type { Server } from 'node:http';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
+import { startHttpTransport } from '../index.js';
 
 const TEST_HOST = '127.0.0.1';
 const TEST_PORT = 47531;
@@ -48,6 +50,7 @@ const GATEWAY_HEADERS = {
 let realFetch: typeof fetch;
 let tokenCalls = 0;
 let dataCalls = 0;
+let httpServer: Server | undefined;
 
 function installFetchStub(): void {
   tokenCalls = 0;
@@ -112,12 +115,17 @@ beforeAll(async () => {
   process.env.MCP_HTTP_HOST = TEST_HOST;
   process.env.CONDUIT_S2S_SECRET = TEST_S2S_SECRET;
 
-  await import('../index.js');
+  httpServer = await startHttpTransport();
   await waitForServerReady();
 });
 
-afterAll(() => {
+afterAll(async () => {
   global.fetch = realFetch;
+  if (httpServer?.listening) {
+    await new Promise<void>((resolve, reject) => {
+      httpServer?.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
 });
 
 beforeEach(() => {

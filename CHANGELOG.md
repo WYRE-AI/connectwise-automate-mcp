@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Security
+
+- **HTTP MCP auth fails closed (CWE-306).** The HTTP transport used to skip `X-Gateway-S2S` when `CONDUIT_S2S_SECRET` was empty, and gateway mode fell through to `CW_AUTOMATE_*` when credential headers were missing. Startup now exits unless the secret is set to a real value (known placeholders are rejected). `MCP_ALLOW_INSECURE_DEV=1` is local-only: it logs a warning, skips the S2S check, and binds `127.0.0.1` only. A configured secret still honors `MCP_HTTP_HOST`. Gateway mode returns 401 when `X-CWA-Server`, `X-CWA-Client-ID`, `X-CWA-Username`, or `X-CWA-Password` is missing. Compose requires the secret, publishes `127.0.0.1:8080:8080`, and does not inject static vendor credentials.
+
 ### Fixed
 
 - **Dropped connections during command and script polls no longer hide the execution, and a fire-and-forget script launch is no longer retried.** Depends on `@wyre-ai/node-connectwise-automate` 4.0.1 ([node-connectwise-automate#99](https://github.com/WYRE-AI/node-connectwise-automate/pull/99)), which closes idle keep-alive sockets before the next poll, retries only idempotent requests, and returns `pollErrors` plus the execution id when `executeCommandAndWait` finishes with `completed: false`. `cwautomate_computers_run_command` and `cwautomate_computers_reboot` now include `execution_id` and `poll_errors` on that result, so the execution can be re-read instead of issued again. `cwautomate_scripts_execute` with `wait: false` no longer retries `POST /Batch/ScriptExecute` after a socket error — a retry can run the script twice. The tool returns the client's `ConnectWiseAutomateAmbiguousRequestError` (the request may or may not have been queued, and it was not retried). Transient-error detection is the SDK's `isTransientNetworkError`, which also matches `other side closed` and socket codes such as `ECONNRESET`, not only `TypeError: terminated`.

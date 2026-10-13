@@ -27,9 +27,11 @@ A Model Context Protocol (MCP) server for ConnectWise Automate with decision tre
 
 > [!NOTE]
 > The DigitalOcean target builds the full Docker image and runs the complete MCP
-> server over HTTP — this is the recommended path for operators. This repo has no
-> Cloudflare Workers entrypoint (`src/worker.ts`), so the Workers button is not a
-> supported target yet; prefer DigitalOcean or the prebuilt container image
+> server over HTTP — this is the recommended path for operators. Set
+> `CONDUIT_S2S_SECRET` (and the `CW_AUTOMATE_*` secrets) before the first boot;
+> HTTP mode exits if the S2S secret is missing. The template sets `AUTH_MODE=env`
+> for that single-tenant deploy. This repo has no supported Cloudflare Workers
+> target yet; prefer DigitalOcean or the prebuilt container image
 > (`ghcr.io/wyre-ai/connectwise-automate-mcp`).
 
 ## Features
@@ -56,16 +58,84 @@ reads the token from `NODE_AUTH_TOKEN`, so no further config is needed.
 
 ## Configuration
 
-Set the following environment variables:
+Copy [`.env.example`](.env.example) and set the variables below. The stdio transport reads `CW_AUTOMATE_*` and does not use `CONDUIT_S2S_SECRET`.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `CW_AUTOMATE_SERVER_URL` | Yes | Your ConnectWise Automate server URL (e.g. `https://your-server.hostedrmm.com`) |
-| `CW_AUTOMATE_CLIENT_ID` | Yes | ConnectWise Automate Client ID |
-| `CW_AUTOMATE_USERNAME` | Yes | Integrator username or user login |
-| `CW_AUTOMATE_PASSWORD` | Yes | Integrator password or user password |
+| `CW_AUTOMATE_SERVER_URL` | For stdio and `AUTH_MODE=env` | ConnectWise Automate server URL (e.g. `https://your-server.hostedrmm.com`) |
+| `CW_AUTOMATE_CLIENT_ID` | For stdio and `AUTH_MODE=env` | ConnectWise Automate Client ID |
+| `CW_AUTOMATE_USERNAME` | For stdio and `AUTH_MODE=env` | Integrator username or user login |
+| `CW_AUTOMATE_PASSWORD` | For stdio and `AUTH_MODE=env` | Integrator password or user password |
 | `CW_AUTOMATE_2FA_CODE` | No | Two-factor authentication code (forces `user` authentication) |
 | `CW_AUTOMATE_AUTH_METHOD` | No | `integrator` (default) or `user` |
+| `MCP_TRANSPORT` | No | `stdio` (default) or `http` |
+| `AUTH_MODE` | No | `gateway` (Docker image and Compose default) or `env`. Gateway mode requires `X-CWA-Server`, `X-CWA-Client-ID`, `X-CWA-Username`, and `X-CWA-Password` on each `/mcp` request and never falls back to `CW_AUTOMATE_*`. `env` uses those variables only after S2S auth succeeds. |
+| `CONDUIT_S2S_SECRET` | Yes for HTTP | Service-to-service secret. Generate with `openssl rand -hex 32`. The HTTP server logs an error and exits non-zero when this is empty or a known placeholder (`replace-with-a-real-secret`, `changeme`, and the other example values). The value is never logged. Compose will not start without it. Never commit a real value. |
+| `MCP_ALLOW_INSECURE_DEV` | No | Set to exactly `1` only for local development to start HTTP without `CONDUIT_S2S_SECRET`. The process logs a warning and does not enforce `X-Gateway-S2S`. The listener is forced to `127.0.0.1`; a wider `MCP_HTTP_HOST` (including `0.0.0.0`) is ignored and the override is logged. A placeholder secret still refuses to start. |
+| `MCP_HTTP_HOST` | No | Bind address when `MCP_TRANSPORT=http` and `CONDUIT_S2S_SECRET` is set. Defaults to `127.0.0.1`. The container image sets `0.0.0.0`. |
+| `MCP_HTTP_PORT` | No | HTTP port. Defaults to `8080`. |
+
+`/health` stays unauthenticated and does not read credentials.
+
+### HTTP authentication
+
+With `MCP_TRANSPORT=http` and a real `CONDUIT_S2S_SECRET`, every `/mcp` request must include `X-Gateway-S2S`. The header value is `t=<unix seconds>,v1=<hex>`, where the hex is HMAC-SHA256 of the literal string `t=<unix seconds>` keyed with `CONDUIT_S2S_SECRET` (64 lowercase hex characters). The timestamp must be within 300 seconds of the server clock. A missing or invalid header is HTTP 401, before vendor credentials are read.
+
+```bash
+TS=$(date +%s)
+SIG=$(printf 't=%s' "$TS" | openssl dgst -sha256 -hmac "$CONDUIT_S2S_SECRET" -hex | awk '{print $NF}')
+curl -sS http://127.0.0.1:8080/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "X-Gateway-S2S: t=${TS},v1=${SIG}" \
+  -H "X-CWA-Server: https://your-server.hostedrmm.com" \
+  -H "X-CWA-Client-ID: your-client-id" \
+  -H "X-CWA-Username: your-username" \
+  -H "X-CWA-Password: your-password" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+In `AUTH_MODE=gateway`, those `X-CWA-*` headers are the only credential source (`X-CWA-2FA` and `X-CWA-Auth-Method` are optional). A request missing any required header is HTTP 401 and does not use `CW_AUTOMATE_*` from the environment. With `AUTH_MODE=env`, the signed request uses the `CW_AUTOMATE_*` variables instead.
+
+### Docker
+
+The image listens on `0.0.0.0` inside the container (`MCP_HTTP_HOST`) and defaults to `AUTH_MODE=gateway`. Publish the port on loopback and pass the S2S secret. In gateway mode, Automate credentials arrive on each request as headers; they are not read from the environment.
+
+```bash
+docker build -t connectwise-automate-mcp .
+docker run \
+  -e CONDUIT_S2S_SECRET=your-s2s-secret \
+  -p 127.0.0.1:8080:8080 \
+  connectwise-automate-mcp
+```
+
+Compose refuses to start when `CONDUIT_S2S_SECRET` is unset, sets `AUTH_MODE=gateway`, does not inject `CW_AUTOMATE_*`, and publishes `127.0.0.1:8080:8080`:
+
+```bash
+CONDUIT_S2S_SECRET=your-s2s-secret docker compose up
+```
+
+Single-tenant HTTP (`AUTH_MODE=env`) still requires the S2S secret, then uses `CW_AUTOMATE_*`:
+
+```bash
+docker run \
+  -e CONDUIT_S2S_SECRET=your-s2s-secret \
+  -e AUTH_MODE=env \
+  -e CW_AUTOMATE_SERVER_URL=https://your-server.hostedrmm.com \
+  -e CW_AUTOMATE_CLIENT_ID=your-client-id \
+  -e CW_AUTOMATE_USERNAME=your-username \
+  -e CW_AUTOMATE_PASSWORD=your-password \
+  -p 127.0.0.1:8080:8080 \
+  connectwise-automate-mcp
+```
+
+Local HTTP without a secret is development-only. It binds `127.0.0.1` only and logs a warning. A non-loopback `MCP_HTTP_HOST` is overridden to `127.0.0.1`:
+
+```bash
+MCP_TRANSPORT=http MCP_ALLOW_INSECURE_DEV=1 node dist/index.js
+```
+
+The DigitalOcean App Platform template is single-tenant: it sets `AUTH_MODE=env` so the `CW_AUTOMATE_*` secrets stay the credential source, and it declares `CONDUIT_S2S_SECRET`. Set that secret in the App Platform UI or the container exits on boot.
 
 ### Authentication methods
 
