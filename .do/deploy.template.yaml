@@ -25,6 +25,16 @@ spec:
     - key: NODE_ENV
       value: "production"
       scope: RUN_TIME
+    # Single-tenant App Platform deploy. The image defaults to gateway
+    # (per-request X-CWA-* headers). env keeps the CW_AUTOMATE_* secrets
+    # below as the credential source. HTTP still refuses to boot until
+    # CONDUIT_S2S_SECRET is set in the App Platform UI.
+    - key: AUTH_MODE
+      value: "env"
+      scope: RUN_TIME
+    - key: CONDUIT_S2S_SECRET
+      type: SECRET
+      scope: RUN_TIME
     - key: CW_AUTOMATE_SERVER_URL
       type: SECRET
       scope: RUN_AND_BUILD_TIME

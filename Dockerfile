@@ -23,7 +23,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 ENV MCP_TRANSPORT=http
 ENV MCP_HTTP_PORT=8080
+# 0.0.0.0 is safe inside the container only because startup refuses to
+# listen without a real CONDUIT_S2S_SECRET. MCP_ALLOW_INSECURE_DEV=1
+# ignores this host and binds 127.0.0.1 only. AUTH_MODE=gateway never
+# falls back to image env credentials.
 ENV MCP_HTTP_HOST=0.0.0.0
-ENV AUTH_MODE=env
+ENV AUTH_MODE=gateway
 LABEL io.modelcontextprotocol.server.name="io.github.WYRE-AI/connectwise-automate-mcp"
 CMD ["node", "dist/index.js"]
