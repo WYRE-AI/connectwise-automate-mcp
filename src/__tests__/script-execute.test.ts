@@ -26,7 +26,7 @@ describe("script execute mirror", () => {
       EntityType: "Computer" as const, EntityIds: [2], ScriptGuid: "guid", Parameters: [], Priority: 0,
       OfflineActionFlags: { SkipsOfflineAgents: true, WakesOfflineAgents: true, OnlyRunsOnOfflineAgents: true },
       UseAgentTime: true, StartDate: "explicit", Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 2 } },
-      ExpireDate: "expiry", DistributionWindow: 10, IncludeSubGroups: false,
+      ExpireDate: "expiry", DistributionWindow: { Amount: 10 }, IncludeSubGroups: false,
     };
     expect(buildScriptExecuteBatchBody(request, now)).toEqual(request);
   });
