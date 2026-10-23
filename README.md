@@ -201,7 +201,14 @@ The server uses a decision tree pattern. Start by navigating to a domain:
 #### Scripts
 - List available scripts
 - Get script details
-- Execute scripts on computers
+- `cwautomate_scripts_execute`: run a script on `computer_ids`, waiting by default; `wait: false` returns batch `launch_results`, including per-target rejection messages. Optional `parameters`, `priority`, `skip_offline`, and `wake_offline` configure the launch.
+- `cwautomate_computers_run_script`: run a script on one `computer_id` and wait for its outcome, including `launch_message` if Automate rejects that target. Accepts optional `parameters`; uses the same launch defaults.
+
+**Script launch request.** Both tools send an explicit `POST /Batch/ScriptExecute` body: `EntityType: "Computer"`, `EntityIds`, `ScriptId`, `Parameters` as `[{Key, Value}]` (default `[]`), `Priority` (default `5`), `OfflineActionFlags` with `SkipsOfflineAgents`, `WakesOfflineAgents`, and `OnlyRunsOnOfflineAgents` (each default `false`), `UseAgentTime: false`, `StartDate` (current UTC ISO string), and `Schedule: {ScriptScheduleFrequency: {ScriptScheduleFrequencyId: 1}}`. This local SDK-builder mirror works with SDK 4.0.1 until node-connectwise-automate#113 ships.
+
+Launch requests are never retried. Automate API errors return an error result with the relevant script/computer IDs, `launched: false`, `status_code`, `automate_message` (up to 500 characters), and a hint that Automate rejected the launch and it was not retried. Dropped connections retain the ambiguous outcome guidance: check script history before launching again.
+
+**Pending verification (WYREAI-573):** the Priority scale (`high=1`, `normal=2`, `low=3`, omitted=`5`), whether frequency ID `1` means run once, the `StartDate` format, offline-flag defaults, and whether empty `Parameters` is accepted still need verification against a captured Control Center request.
 
 ## Development
 

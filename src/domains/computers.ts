@@ -21,6 +21,7 @@ import {
   ConnectWiseAutomateAmbiguousRequestError,
   isDroppedConnection,
 } from "../utils/network-errors.js";
+import { scriptExecuteRequest, scriptLaunchFailure } from "../utils/script-execute.js";
 import { logToolFailure } from "../utils/log.js";
 
 /**
@@ -167,7 +168,10 @@ function getTools(): Tool[] {
     },
     {
       name: "cwautomate_computers_run_script",
-      description: "Run a script on a specific computer",
+      description:
+        "Run a script on a specific computer and wait for its outcome. " +
+        "Launches send explicit scheduling defaults and are never retried; " +
+        "API rejections include status_code and automate_message.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -401,18 +405,12 @@ async function handleCall(
     case "cwautomate_computers_run_script": {
       const computerId = args.computer_id as number;
       const scriptId = args.script_id as number;
-      const parameters = args.parameters as Record<string, string> | undefined;
 
       let result;
       try {
         [result] = await client.scripts.runAndWait(
           [computerId],
-          {
-            ScriptId: scriptId,
-            Parameters: parameters
-              ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
-              : undefined,
-          },
+          scriptExecuteRequest(args, [computerId]),
           { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
         );
       } catch (error) {
@@ -422,7 +420,14 @@ async function handleCall(
         // retrying could run it a second time, so report that honestly
         // instead of guessing either way. See network-errors.ts for what this
         // failure looks like and why it happens.
-        if (!isDroppedConnection(error)) throw error;
+        if (!isDroppedConnection(error)) {
+          const failure = scriptLaunchFailure(toolName, error, {
+            script_id: scriptId,
+            computer_id: computerId,
+          });
+          if (failure) return failure;
+          throw error;
+        }
         logToolFailure(
           "cwautomate_computers_run_script",
           error,
