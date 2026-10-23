@@ -447,6 +447,20 @@ describe("Computers Domain Handler", () => {
     });
 
     describe("cwautomate_computers_run_script", () => {
+      it("returns Automate rejection without retrying", async () => {
+        mockScriptsRunAndWait.mockRejectedValue(Object.assign(new Error("Automate rejected script"), { statusCode: 500 }));
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", { script_id: 100, computer_id: 1 });
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ script_id: 100, computer_id: 1, launched: false, status_code: 500, automate_message: "Automate rejected script" });
+        expect(mockScriptsRunAndWait).toHaveBeenCalledTimes(1);
+        expect(stderr).toHaveBeenCalledTimes(1);
+      });
+      it("surfaces a per-target launch rejection", async () => {
+        mockScriptsRunAndWait.mockResolvedValue([{ computerId: 1, launched: false, completed: false, waitedMs: 0, launchMessage: "Insufficient permissions" }]);
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", { script_id: 100, computer_id: 1 });
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ launched: false, launch_message: "Insufficient permissions" });
+      });
+
       it("should report the run's real outcome", async () => {
         const result = await computersHandler.handleCall(
           "cwautomate_computers_run_script",
@@ -463,7 +477,10 @@ describe("Computers Domain Handler", () => {
         expect(data.state).toBe("Success");
         expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
           [1],
-          { ScriptId: 100, Parameters: undefined },
+          { EntityType: "Computer", EntityIds: [1], Priority: 5,
+            OfflineActionFlags: { SkipsOfflineAgents: false, WakesOfflineAgents: false, OnlyRunsOnOfflineAgents: false },
+            UseAgentTime: false, StartDate: expect.any(String),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } }, ScriptId: 100, Parameters: [] },
           { timeoutMs: 90000 }
         );
       });
@@ -500,6 +517,10 @@ describe("Computers Domain Handler", () => {
         expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
           [1],
           {
+            EntityType: "Computer", EntityIds: [1], Priority: 5,
+            OfflineActionFlags: { SkipsOfflineAgents: false, WakesOfflineAgents: false, OnlyRunsOnOfflineAgents: false },
+            UseAgentTime: false, StartDate: expect.any(String),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
             ScriptId: 100,
             Parameters: [{ Key: "arg1", Value: "value1" }],
           },
