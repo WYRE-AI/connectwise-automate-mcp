@@ -34,3 +34,10 @@ export function isDroppedConnection(error: unknown): boolean {
     isTransientNetworkError(error)
   );
 }
+
+/** Automate rejected a repeat launch because the original command is pending. */
+export function isDuplicateCommandError(error: unknown): boolean {
+  return error instanceof Error &&
+    "statusCode" in error && error.statusCode === 400 &&
+    /duplicate command/i.test(error.message);
+}

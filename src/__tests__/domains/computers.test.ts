@@ -12,6 +12,8 @@ const {
   mockScriptsRunAndWait,
   mockCommands,
   mockExecuteCommandAndWait,
+  mockExecuteCommand,
+  mockCommandExecutions,
   mockClient,
 } = vi.hoisted(() => {
   const mockComputersList = vi.fn();
@@ -19,6 +21,8 @@ const {
   const mockScriptsRunAndWait = vi.fn();
   const mockCommands = vi.fn();
   const mockExecuteCommandAndWait = vi.fn();
+  const mockExecuteCommand = vi.fn();
+  const mockCommandExecutions = vi.fn();
 
   const mockClient = {
     computers: {
@@ -26,6 +30,8 @@ const {
       get: mockComputersGet,
       commands: mockCommands,
       executeCommandAndWait: mockExecuteCommandAndWait,
+      executeCommand: mockExecuteCommand,
+      commandExecutions: mockCommandExecutions,
     },
     scripts: {
       runAndWait: mockScriptsRunAndWait,
@@ -38,6 +44,8 @@ const {
     mockScriptsRunAndWait,
     mockCommands,
     mockExecuteCommandAndWait,
+  mockExecuteCommand,
+  mockCommandExecutions,
     mockClient,
   };
 });
@@ -71,6 +79,8 @@ describe("Computers Domain Handler", () => {
     mockScriptsRunAndWait.mockClear();
     mockCommands.mockClear();
     mockExecuteCommandAndWait.mockClear();
+    mockExecuteCommand.mockReset().mockResolvedValue({ Id: 4711, Status: "Pending" });
+    mockCommandExecutions.mockReset().mockResolvedValue([]);
 
     // Reset mock implementations to the real API response shape:
     // Automate list endpoints return a bare JSON array (issue #35).
@@ -110,7 +120,7 @@ describe("Computers Domain Handler", () => {
     it("should return all computer tools", () => {
       const tools = computersHandler.getTools();
 
-      expect(tools.length).toBe(7);
+      expect(tools.length).toBe(8);
 
       const toolNames = tools.map((t) => t.name);
       expect(toolNames).toContain("cwautomate_computers_list");
@@ -120,6 +130,7 @@ describe("Computers Domain Handler", () => {
       expect(toolNames).toContain("cwautomate_computers_run_script");
       expect(toolNames).toContain("cwautomate_computers_run_command");
       expect(toolNames).toContain("cwautomate_commands_list");
+      expect(toolNames).toContain("cwautomate_computers_command_status");
     });
 
     it("cwautomate_computers_get should require computer_id", () => {
@@ -159,6 +170,104 @@ describe("Computers Domain Handler", () => {
       expect(runScriptTool).toBeDefined();
       expect(runScriptTool?.inputSchema.required).toContain("computer_id");
       expect(runScriptTool?.inputSchema.required).toContain("script_id");
+    });
+  });
+
+
+  describe("queue and poll commands", () => {
+    it.each(["reboot", "run_command"])("queues %s immediately by default", async (name) => {
+      const result = await computersHandler.handleCall("cwautomate_computers_" + name, {
+        computer_id: 1, command_id: "17",
+      });
+      expect(JSON.parse(result.content[0].text)).toMatchObject({
+        queued: true, completed: false, execution_id: 4711,
+      });
+      expect(mockExecuteCommand).toHaveBeenCalledExactlyOnceWith(1, { Command: { Id: "17" }, Parameters: [] });
+      expect(mockExecuteCommandAndWait).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["reboot", { wait_seconds: 999 }],
+      ["run_command", { wait_seconds: 999 }],
+      ["run_command", { timeout_seconds: 999 }],
+      ["run_command", { timeout_seconds: 5 }],
+      ["run_command", { wait_seconds: 2, timeout_seconds: 999 }],
+    ])("bounds the %s wait: %j", async (name, args) => {
+      await computersHandler.handleCall("cwautomate_computers_" + name, {
+        computer_id: 1, command_id: "17", ...args,
+      });
+      expect(mockExecuteCommandAndWait.mock.calls[0][2]).toEqual({
+        timeoutMs: Math.min(("wait_seconds" in args ? args.wait_seconds : args.timeout_seconds) ?? 0, 20) * 1000,
+      });
+      expect(mockExecuteCommand).not.toHaveBeenCalled();
+    });
+
+    it.each(["reboot", "run_command"])("handles a duplicate %s without retry", async (name) => {
+      mockExecuteCommand.mockRejectedValue(Object.assign(new Error("Bad request: Duplicate command."), { statusCode: 400 }));
+      const result = await computersHandler.handleCall("cwautomate_computers_" + name, {
+        computer_id: 1, command_id: "17",
+      });
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ queued: false, already_queued: true });
+      expect(mockExecuteCommand).toHaveBeenCalledTimes(1);
+      expect(mockExecuteCommandAndWait).not.toHaveBeenCalled();
+      expect(stderr).toHaveBeenCalledTimes(1);
+    });
+
+
+    it.each(["reboot", "run_command"])("preserves a dropped %s queue launch without retry", async (name) => {
+      mockExecuteCommand.mockRejectedValue(new TypeError("terminated"));
+      const result = await computersHandler.handleCall("cwautomate_computers_" + name, { computer_id: 1, command_id: "17" });
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ completed: false, message: expect.stringContaining("interrupted") });
+      expect(mockExecuteCommand).toHaveBeenCalledTimes(1);
+      expect(mockExecuteCommandAndWait).not.toHaveBeenCalled();
+    });
+
+    it.each(["Success", "Failed", "Terminated", "success"])("reports queued terminal status %s", async (Status) => {
+      mockExecuteCommand.mockResolvedValue({ Id: 4711, Status, Output: "done" });
+      const result = await computersHandler.handleCall("cwautomate_computers_run_command", { computer_id: 1, command_id: "17" });
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ queued: true, completed: true, output: "done" });
+    });
+
+    it.each(["reboot", "run_command"])("handles a duplicate %s on the wait path", async (name) => {
+      mockExecuteCommandAndWait.mockRejectedValue(Object.assign(new Error("Duplicate command"), { statusCode: 400 }));
+      const result = await computersHandler.handleCall("cwautomate_computers_" + name, { computer_id: 1, command_id: "17", wait_seconds: 20 });
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ already_queued: true });
+      expect(mockExecuteCommandAndWait).toHaveBeenCalledTimes(1);
+      expect(mockExecuteCommand).not.toHaveBeenCalled();
+    });
+
+    it("reads a terminal execution and preserves dates", async () => {
+      const execution = { Id: "4711", Status: "Terminated", Output: "Stopped", Command: { Id: "17", Name: "Reboot" }, DateCompleted: "today" };
+      mockCommandExecutions.mockResolvedValue([{ Id: 99 }, execution]);
+      const result = await computersHandler.handleCall("cwautomate_computers_command_status", { computer_id: 1, execution_id: 4711 });
+      expect(mockCommandExecutions).toHaveBeenCalledWith(1, { ids: "4711" });
+      expect(JSON.parse(result.content[0].text)).toMatchObject({ found: true, completed: true, execution });
+      expect(computersHandler.getTools().find((t) => t.name === "cwautomate_computers_command_status")?.annotations).toEqual({
+        readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true,
+      });
+    });
+
+    it("returns a non-error when the execution is absent", async () => {
+      const result = await computersHandler.handleCall("cwautomate_computers_command_status", { computer_id: "1", execution_id: "4711" });
+      expect(mockCommandExecutions).toHaveBeenCalledWith(1, { ids: "4711" });
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.content[0].text)).toEqual({ computer_id: 1, execution_id: 4711, found: false, message: "No command execution with that id on this computer." });
+    });
+
+    it("caps the computer script wait", async () => {
+      await computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 100, timeout_seconds: 999 });
+      expect(mockScriptsRunAndWait.mock.calls[0][2]).toEqual({ timeoutMs: 20000 });
+    });
+
+    it("logs a computer script server error and rethrows it", async () => {
+      const error = Object.assign(new Error("upstream"), { statusCode: 500, response: "Encountered unhandled exception" });
+      mockScriptsRunAndWait.mockRejectedValue(error);
+      await expect(computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 100 })).rejects.toBe(error);
+      expect(stderr).toHaveBeenCalledTimes(1);
+      expect(stderr.mock.calls[0][0]).toContain("upstream 500 diagnostics");
     });
   });
 
@@ -284,7 +393,7 @@ describe("Computers Domain Handler", () => {
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
-          { computer_id: 1 }
+          { wait_seconds: 20, computer_id: 1 }
         );
 
         expect(result.isError).toBeUndefined();
@@ -298,12 +407,14 @@ describe("Computers Domain Handler", () => {
           status: "Success",
           output: "Reboot queued",
           waited_seconds: 6,
+          queued: true,
+          execution_id: 4712,
         });
         expect(mockCommands).toHaveBeenCalledTimes(1);
         expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
           1,
           { Command: { Id: "17" }, Parameters: [] },
-          { timeoutMs: 90000 }
+          { timeoutMs: 20000 }
         );
       });
 
@@ -315,7 +426,7 @@ describe("Computers Domain Handler", () => {
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
-          { computer_id: 1 }
+          { wait_seconds: 20, computer_id: 1 }
         );
 
         const data = JSON.parse(result.content[0].text);
@@ -326,7 +437,7 @@ describe("Computers Domain Handler", () => {
       it("should use an explicit command_id without consulting the catalog", async () => {
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
-          { computer_id: 1, command_id: "42" }
+          { wait_seconds: 20, computer_id: 1, command_id: "42" }
         );
 
         expect(result.isError).toBeUndefined();
@@ -334,7 +445,7 @@ describe("Computers Domain Handler", () => {
         expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
           1,
           { Command: { Id: "42" }, Parameters: [] },
-          { timeoutMs: 90000 }
+          { timeoutMs: 20000 }
         );
 
         const data = JSON.parse(result.content[0].text);
@@ -350,7 +461,7 @@ describe("Computers Domain Handler", () => {
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
-          { computer_id: 1 }
+          { wait_seconds: 20, computer_id: 1 }
         );
 
         expect(result.isError).toBe(true);
@@ -365,7 +476,7 @@ describe("Computers Domain Handler", () => {
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
-          { computer_id: 1 }
+          { wait_seconds: 20, computer_id: 1 }
         );
 
         // Issuing the command is one request and polling is several more, so
@@ -392,7 +503,7 @@ describe("Computers Domain Handler", () => {
         );
 
         await expect(
-          computersHandler.handleCall("cwautomate_computers_reboot", {
+          computersHandler.handleCall("cwautomate_computers_reboot", { wait_seconds: 20,
             computer_id: 1,
           })
         ).rejects.toThrow("Access forbidden");
@@ -405,13 +516,13 @@ describe("Computers Domain Handler", () => {
           completed: false,
           execution: { Id: 8801, Status: "Pending" },
           status: "Pending",
-          waitedMs: 90000,
+          waitedMs: 20000,
           pollErrors: 3,
         });
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
-          { computer_id: 1 }
+          { wait_seconds: 20, computer_id: 1 }
         );
 
         const data = JSON.parse(result.content[0].text);
@@ -432,7 +543,7 @@ describe("Computers Domain Handler", () => {
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_reboot",
-          { computer_id: 1 }
+          { wait_seconds: 20, computer_id: 1 }
         );
 
         expect(result.isError).toBeUndefined();
@@ -464,7 +575,7 @@ describe("Computers Domain Handler", () => {
         expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
           [1],
           { ScriptId: 100, Parameters: undefined },
-          { timeoutMs: 90000 }
+          { timeoutMs: 20000 }
         );
       });
 
@@ -503,7 +614,7 @@ describe("Computers Domain Handler", () => {
             ScriptId: 100,
             Parameters: [{ Key: "arg1", Value: "value1" }],
           },
-          { timeoutMs: 90000 }
+          { timeoutMs: 20000 }
         );
       });
 
@@ -544,7 +655,7 @@ describe("Computers Domain Handler", () => {
       it("should send the command as a catalog reference and return its output", async () => {
         const result = await computersHandler.handleCall(
           "cwautomate_computers_run_command",
-          {
+          { wait_seconds: 20,
             computer_id: 1,
             command_id: "2",
             parameters: ["ipconfig /all"],
@@ -560,11 +671,12 @@ describe("Computers Domain Handler", () => {
           status: "Success",
           output: "Windows IP Configuration",
           waited_seconds: 4,
+          queued: true,
         });
         expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
           1,
           { Command: { Id: "2" }, Parameters: ["ipconfig /all"] },
-          { timeoutMs: 90000 }
+          { timeoutMs: 20000 }
         );
       });
 
@@ -573,7 +685,7 @@ describe("Computers Domain Handler", () => {
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_run_command",
-          { computer_id: 1, command_id: "2", parameters: ["ipconfig /all"] }
+          { wait_seconds: 20, computer_id: 1, command_id: "2", parameters: ["ipconfig /all"] }
         );
 
         // The customer-reported case: this used to escape to the catch-all
@@ -604,7 +716,7 @@ describe("Computers Domain Handler", () => {
         );
 
         await expect(
-          computersHandler.handleCall("cwautomate_computers_run_command", {
+          computersHandler.handleCall("cwautomate_computers_run_command", { wait_seconds: 20,
             computer_id: 1,
             command_id: "2",
           })
@@ -619,13 +731,13 @@ describe("Computers Domain Handler", () => {
           execution: { Id: 4711, Status: "Pending" },
           status: "Pending",
           output: "",
-          waitedMs: 90000,
+          waitedMs: 20000,
           pollErrors: 2,
         });
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_run_command",
-          { computer_id: 1, command_id: "2" }
+          { wait_seconds: 20, computer_id: 1, command_id: "2" }
         );
 
         const data = JSON.parse(result.content[0].text);

@@ -14,30 +14,63 @@ import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { elicitText } from "../utils/elicitation.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
-import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
+import {
+  clampWaitSeconds,
+  DEFAULT_COMMAND_WAIT_SECONDS,
+  DEFAULT_WAIT_SECONDS,
+} from "../utils/constants.js";
 import { buildDeviceCard, DEVICE_CARD_META } from "../card.builder.js";
 import { escapeConditionValue } from "../utils/odata.js";
 import {
   ConnectWiseAutomateAmbiguousRequestError,
   isDroppedConnection,
+  isDuplicateCommandError,
 } from "../utils/network-errors.js";
-import { logToolFailure } from "../utils/log.js";
+import {
+  describeScriptExecuteRequest,
+  logScriptExecuteServerError,
+  logToolFailure,
+} from "../utils/log.js";
 
 /**
- * Fields a caller needs to re-read a command that did not reach a terminal
- * status. The execution id is the one Automate returned at launch; poll_errors
- * counts status reads that still failed after the client's own GET retries.
- * Absent when the command finished, so a successful result stays unchanged.
+ * Every result carries the launch execution id for later reads. Unfinished
+ * results also include poll_errors: reads that failed after SDK GET retries.
  */
 function unfinishedCommand(result: CommandRunResult): {
-  execution_id?: number;
+  execution_id: number | undefined;
   poll_errors?: number;
 } {
-  if (result.completed) return {};
+  if (result.completed) return { execution_id: result.execution.Id };
   return {
     execution_id: result.execution.Id,
     poll_errors: result.pollErrors ?? 0,
   };
+}
+
+// The SDK keeps isTerminalCommandStatus private; mirror its case-insensitive check.
+function isTerminalCommandStatus(status: string | undefined): boolean {
+  return ["success", "failed", "terminated"].includes(status?.toLowerCase() ?? "");
+}
+
+// Queue results include queued, completed, execution_id, status and optional output.
+// Wait results additionally retain waited_seconds and poll_errors when unfinished.
+function queuedCommand(execution: { Id?: number; Status?: string; Output?: string }) {
+  return {
+    queued: true,
+    completed: isTerminalCommandStatus(execution.Status),
+    execution_id: execution.Id,
+    status: execution.Status,
+    ...(execution.Output !== undefined ? { output: execution.Output } : {}),
+    message: "Command queued. Automate runs it on the agent's next check-in. Poll cwautomate_computers_command_status with computer_id and execution_id for the result. Do not issue it again.",
+  };
+}
+
+function duplicateCommandResult(toolName: string, error: unknown, computerId: number, commandId: string) {
+  logToolFailure(toolName, error, "Automate reports this command is already pending on the computer; not re-issued");
+  return jsonResult({
+    queued: false, already_queued: true, computer_id: computerId, command_id: commandId,
+    message: "Automate reports this command is already queued/pending for this computer (HTTP 400 'Duplicate command'). It was not issued again. Do not re-issue it: check cwautomate_computers_command_status (with the execution_id from the first call) or the computer's command history in Automate and wait for the agent to pick it up.",
+  });
 }
 
 /**
@@ -140,7 +173,7 @@ function getTools(): Tool[] {
     {
       name: "cwautomate_computers_reboot",
       description:
-        "Reboot a computer and wait for the command's result. Automate has " +
+        "Queue a reboot and return immediately by default with execution_id. Poll cwautomate_computers_command_status; never re-issue on a timeout or a Duplicate command result. Automate has " +
         "no dedicated restart route: the reboot is issued as a catalog " +
         "command (POST /Computers/{id}/CommandExecute). By default the " +
         "first catalog entry named like 'Reboot' or 'Restart' is used; pass " +
@@ -151,6 +184,10 @@ function getTools(): Tool[] {
       inputSchema: {
         type: "object" as const,
         properties: {
+          wait_seconds: {
+            type: "number", minimum: 0, maximum: 20, default: 0,
+            description: "Wait for completion (default 0, max 20 seconds). Zero queues and returns immediately. Takes precedence over legacy timeout_seconds where supported.",
+          },
           computer_id: {
             type: "number",
             description: "The computer ID to reboot",
@@ -171,6 +208,10 @@ function getTools(): Tool[] {
       inputSchema: {
         type: "object" as const,
         properties: {
+          timeout_seconds: {
+            type: "number",
+            description: "Completion wait (default 20, max 20 seconds). Still-running scripts continue; read cwautomate_scripts_history, do NOT launch again.",
+          },
           computer_id: {
             type: "number",
             description: "The computer ID to run the script on",
@@ -189,6 +230,19 @@ function getTools(): Tool[] {
       },
     },
     {
+      name: "cwautomate_computers_command_status",
+      description: "Read a queued command execution without re-issuing it.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+      inputSchema: {
+        type: "object",
+        properties: {
+          computer_id: { type: "number", description: "The computer ID" },
+          execution_id: { type: "number", description: "The execution ID returned at launch" },
+        },
+        required: ["computer_id", "execution_id"],
+      },
+    },
+    {
       name: "cwautomate_commands_list",
       description:
         "List the Automate command catalog. Commands are a fixed, " +
@@ -202,7 +256,7 @@ function getTools(): Tool[] {
     {
       name: "cwautomate_computers_run_command",
       description:
-        "Issue a catalog command to a computer and wait for its result. " +
+        "Queue a catalog command and return immediately by default with execution_id. Poll cwautomate_computers_command_status; never re-issue on a timeout or a Duplicate command result. " +
         "The command_id must come from cwautomate_commands_list; free-text " +
         "commands are not accepted by Automate. Note that the API user's " +
         "command level and the group-level 'Send Commands' grant silently " +
@@ -212,6 +266,10 @@ function getTools(): Tool[] {
       inputSchema: {
         type: "object" as const,
         properties: {
+          wait_seconds: {
+            type: "number", minimum: 0, maximum: 20, default: 0,
+            description: "Wait for completion (default 0, max 20 seconds). Zero queues and returns immediately. Takes precedence over legacy timeout_seconds where supported.",
+          },
           computer_id: {
             type: "number",
             description: "The computer ID to send the command to",
@@ -232,7 +290,7 @@ function getTools(): Tool[] {
             type: "number",
             description:
               `How long to wait for the command to finish before returning ` +
-              `a partial result (default: ${DEFAULT_WAIT_SECONDS})`,
+              `a partial result (legacy alias for wait_seconds; default 0, max 20; wait_seconds wins)`,
           },
         },
         required: ["computer_id", "command_id"],
@@ -352,14 +410,29 @@ async function handleCall(
         commandName = reboot.Name;
       }
 
+      const timeoutSeconds = clampWaitSeconds(args.wait_seconds, DEFAULT_COMMAND_WAIT_SECONDS);
       let result;
       try {
+        if (timeoutSeconds === 0) {
+          const execution = await client.computers.executeCommand(computerId, {
+            Command: { Id: commandId },
+            Parameters: [],
+          });
+          return jsonResult({
+            computer_id: computerId, command_id: commandId,
+            ...(commandName !== undefined ? { command_name: commandName } : {}),
+            ...queuedCommand(execution),
+          });
+        }
         result = await client.computers.executeCommandAndWait(
           computerId,
           { Command: { Id: commandId }, Parameters: [] },
-          { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
+          { timeoutMs: timeoutSeconds * 1000 }
         );
       } catch (error) {
+        if (isDuplicateCommandError(error)) {
+          return duplicateCommandResult(toolName, error, computerId, commandId);
+        }
         // The launch POST is not retried: a socket error means the reboot
         // may already be queued. Status-poll drops come back as
         // completed:false with the execution id, not as a throw.
@@ -390,6 +463,7 @@ async function handleCall(
         computer_id: computerId,
         command_id: commandId,
         command_name: commandName,
+        queued: true,
         completed: result.completed,
         status: result.status,
         output: result.output,
@@ -403,19 +477,21 @@ async function handleCall(
       const scriptId = args.script_id as number;
       const parameters = args.parameters as Record<string, string> | undefined;
 
+      const request = {
+        ScriptId: scriptId,
+        Parameters: parameters
+          ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
+          : undefined,
+      };
       let result;
       try {
         [result] = await client.scripts.runAndWait(
           [computerId],
-          {
-            ScriptId: scriptId,
-            Parameters: parameters
-              ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
-              : undefined,
-          },
-          { timeoutMs: DEFAULT_WAIT_SECONDS * 1000 }
+          request,
+          { timeoutMs: clampWaitSeconds(args.timeout_seconds, DEFAULT_WAIT_SECONDS) * 1000 }
         );
       } catch (error) {
+        logScriptExecuteServerError(error, describeScriptExecuteRequest({ ...request, EntityIds: [computerId] }));
         // runAndWait launches the script and then polls for its result over
         // several requests. If a transient network failure hits mid-poll,
         // we genuinely don't know whether the script already launched —
@@ -455,6 +531,20 @@ async function handleCall(
       });
     }
 
+    case "cwautomate_computers_command_status": {
+      const computerId = Number(args.computer_id);
+      const executionId = Number(args.execution_id);
+      const rows = await client.computers.commandExecutions(computerId, { ids: String(executionId) });
+      const execution = rows.find((row) => Number(row.Id) === executionId);
+      if (!execution) return jsonResult({ computer_id: computerId, execution_id: executionId, found: false, message: "No command execution with that id on this computer." });
+      return jsonResult({
+        computer_id: computerId, execution_id: executionId, found: true,
+        completed: isTerminalCommandStatus(execution.Status),
+        status: execution.Status, output: execution.Output, command: execution.Command,
+        execution,
+      });
+    }
+
     case "cwautomate_commands_list": {
       const commands = await client.computers.commands();
 
@@ -465,10 +555,20 @@ async function handleCall(
       const computerId = args.computer_id as number;
       const commandId = String(args.command_id);
       const timeoutSeconds =
-        (args.timeout_seconds as number | undefined) ?? DEFAULT_WAIT_SECONDS;
+        clampWaitSeconds(args.wait_seconds ?? args.timeout_seconds, DEFAULT_COMMAND_WAIT_SECONDS);
 
       let result;
       try {
+        if (timeoutSeconds === 0) {
+          const execution = await client.computers.executeCommand(computerId, {
+            Command: { Id: commandId },
+            Parameters: (args.parameters as string[] | undefined) ?? [],
+          });
+          return jsonResult({
+            computer_id: computerId, command_id: commandId,
+            ...queuedCommand(execution),
+          });
+        }
         result = await client.computers.executeCommandAndWait(
           computerId,
           {
@@ -478,6 +578,9 @@ async function handleCall(
           { timeoutMs: timeoutSeconds * 1000 }
         );
       } catch (error) {
+        if (isDuplicateCommandError(error)) {
+          return duplicateCommandResult(toolName, error, computerId, commandId);
+        }
         // The launch POST is not retried: a socket error means the command
         // may already be queued. Status-poll drops come back as
         // completed:false with the execution id, not as a throw.
@@ -506,7 +609,7 @@ async function handleCall(
       return jsonResult({
         computer_id: computerId,
         command_id: commandId,
-        execution_id: result.execution.Id,
+        queued: true,
         completed: result.completed,
         status: result.status,
         output: result.output,
