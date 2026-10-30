@@ -101,6 +101,24 @@ describe("Scripts Domain Handler", () => {
     mockRunningOnComputer.mockResolvedValue([]);
   });
 
+
+  it.each([undefined, 999])("caps script wait %s at 20 seconds", async (timeout_seconds) => {
+    await scriptsHandler.handleCall("cwautomate_scripts_execute", { script_id: 100, computer_ids: [1], timeout_seconds });
+    expect(mockRunAndWait.mock.calls[0][2]).toEqual({ timeoutMs: 20000 });
+  });
+
+  it.each([true, false])("logs one diagnostic and rethrows server errors (wait %s)", async (wait) => {
+    const error = Object.assign(new Error("upstream"), { statusCode: 500, response: { password: "private", message: "Encountered unhandled exception" } });
+    (wait ? mockRunAndWait : mockExecuteBatch).mockRejectedValueOnce(error);
+    await expect(scriptsHandler.handleCall("cwautomate_scripts_execute", {
+      script_id: 100, computer_ids: [1], wait, parameters: { arg: "NEVER_LOG" },
+    })).rejects.toBe(error);
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderr.mock.calls[0][0]).toContain("upstream 500 diagnostics");
+    expect(stderr.mock.calls[0][0]).not.toContain("private");
+    expect(stderr.mock.calls[0][0]).not.toContain("NEVER_LOG");
+  });
+
   describe("getTools", () => {
     it("should return all script tools", () => {
       const tools = scriptsHandler.getTools();
@@ -261,7 +279,7 @@ describe("Scripts Domain Handler", () => {
             computerId: 3,
             launched: true,
             completed: false,
-            waitedMs: 90000,
+            waitedMs: 20000,
           },
         ]);
 
@@ -325,7 +343,7 @@ describe("Scripts Domain Handler", () => {
               WakesOfflineAgents: undefined,
             },
           },
-          { timeoutMs: 90000 }
+          { timeoutMs: 20000 }
         );
       });
 

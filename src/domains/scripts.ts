@@ -9,7 +9,7 @@ import type { DomainHandler, CallToolResult } from "../utils/types.js";
 import { getClient, type CWAutomateCredentials } from "../utils/client.js";
 import { toPage } from "../utils/pagination.js";
 import { jsonResult, listResult } from "../utils/results.js";
-import { DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
+import { clampWaitSeconds, DEFAULT_WAIT_SECONDS } from "../utils/constants.js";
 import {
   andConditions,
   containsCondition,
@@ -19,7 +19,11 @@ import {
   ConnectWiseAutomateAmbiguousRequestError,
   isDroppedConnection,
 } from "../utils/network-errors.js";
-import { logToolFailure } from "../utils/log.js";
+import {
+  describeScriptExecuteRequest,
+  logScriptExecuteServerError,
+  logToolFailure,
+} from "../utils/log.js";
 
 /**
  * Convert the tool's key/value parameter object into the Key/Value pair array
@@ -140,7 +144,7 @@ function getTools(): Tool[] {
             type: "number",
             description:
               `How long to wait for completion before returning a partial ` +
-              `result (default: ${DEFAULT_WAIT_SECONDS}). The script keeps ` +
+              `result (default: ${DEFAULT_WAIT_SECONDS}, max 20 seconds). Read cwautomate_scripts_history for a still-running run; do NOT launch again. The script keeps ` +
               `running server-side either way.`,
           },
           skip_offline: {
@@ -240,7 +244,7 @@ async function handleCall(
       const priority = args.priority as "low" | "normal" | "high" | undefined;
       const wait = (args.wait as boolean | undefined) ?? true;
       const timeoutMs =
-        ((args.timeout_seconds as number | undefined) ?? DEFAULT_WAIT_SECONDS) *
+        clampWaitSeconds(args.timeout_seconds, DEFAULT_WAIT_SECONDS) *
         1000;
 
       const request = {
@@ -266,6 +270,10 @@ async function handleCall(
             EntityIds: computerIds,
           });
         } catch (error) {
+        logScriptExecuteServerError(
+            error,
+            describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
+          );
           if (!isDroppedConnection(error)) throw error;
           logToolFailure(
             "cwautomate_scripts_execute",
@@ -313,6 +321,10 @@ async function handleCall(
           timeoutMs,
         });
       } catch (error) {
+        logScriptExecuteServerError(
+          error,
+          describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
+        );
         // runAndWait launches the script and then polls for its result over
         // several requests. If a transient network failure hits mid-poll,
         // we genuinely don't know whether the script already launched for
