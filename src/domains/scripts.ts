@@ -19,37 +19,8 @@ import {
   ConnectWiseAutomateAmbiguousRequestError,
   isDroppedConnection,
 } from "../utils/network-errors.js";
+import { scriptExecuteRequest, scriptLaunchFailure } from "../utils/script-execute.js";
 import { logToolFailure } from "../utils/log.js";
-
-/**
- * Convert the tool's key/value parameter object into the Key/Value pair array
- * the batch script endpoint expects.
- */
-function toParameterPairs(
-  parameters?: Record<string, string>
-): { Key: string; Value: string }[] | undefined {
-  if (!parameters) return undefined;
-  return Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }));
-}
-
-/**
- * Map the friendly priority name to the library's numeric priority
- * (1 = high, 2 = normal, 3 = low).
- */
-function toPriority(
-  priority?: "low" | "normal" | "high"
-): number | undefined {
-  switch (priority) {
-    case "high":
-      return 1;
-    case "normal":
-      return 2;
-    case "low":
-      return 3;
-    default:
-      return undefined;
-  }
-}
 
 /**
  * Get script domain tools
@@ -107,7 +78,8 @@ function getTools(): Tool[] {
         "Automate has no synchronous run, so this schedules the script and " +
         "polls its history until it finishes, returning the per-computer " +
         "outcome and any diagnostic message. Use the computers domain to find " +
-        "computer IDs first.",
+        "computer IDs first. Launches send explicit scheduling defaults and are " +
+        "never retried; API rejections include status_code and automate_message.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -128,7 +100,7 @@ function getTools(): Tool[] {
           priority: {
             type: "string",
             enum: ["low", "normal", "high"],
-            description: "Execution priority (default: normal)",
+            description: "Execution priority: low=3, normal=2, high=1; omitted=5. Scale pending verification (WYREAI-573)",
           },
           wait: {
             type: "boolean",
@@ -237,23 +209,12 @@ async function handleCall(
     case "cwautomate_scripts_execute": {
       const scriptId = args.script_id as number;
       const computerIds = (args.computer_ids as number[] | undefined) ?? [];
-      const priority = args.priority as "low" | "normal" | "high" | undefined;
       const wait = (args.wait as boolean | undefined) ?? true;
       const timeoutMs =
         ((args.timeout_seconds as number | undefined) ?? DEFAULT_WAIT_SECONDS) *
         1000;
 
-      const request = {
-        ScriptId: scriptId,
-        Parameters: toParameterPairs(
-          args.parameters as Record<string, string> | undefined
-        ),
-        Priority: toPriority(priority),
-        OfflineActionFlags: {
-          SkipsOfflineAgents: args.skip_offline as boolean | undefined,
-          WakesOfflineAgents: args.wake_offline as boolean | undefined,
-        },
-      };
+      const request = scriptExecuteRequest(args, computerIds);
 
       if (!wait) {
         // POST /Batch/ScriptExecute is not idempotent. The client already
@@ -266,7 +227,14 @@ async function handleCall(
             EntityIds: computerIds,
           });
         } catch (error) {
-          if (!isDroppedConnection(error)) throw error;
+          if (!isDroppedConnection(error)) {
+            const failure = scriptLaunchFailure(toolName, error, {
+              script_id: scriptId,
+              computer_ids: computerIds,
+            });
+            if (failure) return failure;
+            throw error;
+          }
           logToolFailure(
             "cwautomate_scripts_execute",
             error,
@@ -301,7 +269,9 @@ async function handleCall(
           script_id: scriptId,
           waited: false,
           message:
-            "Script launched. Use cwautomate_scripts_history to read the outcome.",
+            batch.ContainsUnsuccessfulResults
+              ? "Automate reported unsuccessful launch results; see launch_results for per-target messages. The launch was not retried."
+              : "Script launch submitted. Use cwautomate_scripts_history to read the outcome.",
           launch_results: batch.ScriptResults,
           contains_unsuccessful_results: batch.ContainsUnsuccessfulResults,
         });
@@ -318,7 +288,14 @@ async function handleCall(
         // we genuinely don't know whether the script already launched for
         // some (or all) targets — retrying could run it a second time, so
         // report that honestly instead of guessing either way.
-        if (!isDroppedConnection(error)) throw error;
+        if (!isDroppedConnection(error)) {
+          const failure = scriptLaunchFailure(toolName, error, {
+            script_id: scriptId,
+            computer_ids: computerIds,
+          });
+          if (failure) return failure;
+          throw error;
+        }
         logToolFailure(
           "cwautomate_scripts_execute",
           error,

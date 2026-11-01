@@ -240,6 +240,27 @@ describe("Scripts Domain Handler", () => {
     });
 
     describe("cwautomate_scripts_execute", () => {
+      it.each([true, false])("sends every default field with wait=%s", async (wait) => {
+        mockRunAndWait.mockResolvedValue([]);
+        mockExecuteBatch.mockResolvedValue({});
+        await scriptsHandler.handleCall("cwautomate_scripts_execute", { script_id: 100, computer_ids: [1], wait });
+        const request = { EntityType: "Computer", EntityIds: [1], Priority: 5,
+            OfflineActionFlags: { SkipsOfflineAgents: false, WakesOfflineAgents: false, OnlyRunsOnOfflineAgents: false },
+            UseAgentTime: false, StartDate: expect.any(String),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } }, ScriptId: 100, Parameters: [] };
+        if (wait) expect(mockRunAndWait).toHaveBeenCalledWith([1], request, { timeoutMs: 90000 });
+        else expect(mockExecuteBatch).toHaveBeenCalledWith(request);
+      });
+      it.each([true, false])("returns Automate rejection once with wait=%s", async (wait) => {
+        const mock = wait ? mockRunAndWait : mockExecuteBatch;
+        mock.mockRejectedValue(Object.assign(new Error("Automate rejected script"), { statusCode: 500 }));
+        const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", { script_id: 100, computer_ids: [1], wait });
+        expect(result.isError).toBe(true);
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ script_id: 100, computer_ids: [1], launched: false, status_code: 500, automate_message: "Automate rejected script" });
+        expect(mock).toHaveBeenCalledTimes(1);
+        expect(stderr).toHaveBeenCalledTimes(1);
+      });
+
       it("should report the real per-computer outcome, not a blanket success", async () => {
         mockRunAndWait.mockResolvedValue([
           {
@@ -317,12 +338,16 @@ describe("Scripts Domain Handler", () => {
         expect(mockRunAndWait).toHaveBeenCalledWith(
           [1, 2],
           {
+            EntityType: "Computer", EntityIds: [1, 2],
+            UseAgentTime: false, StartDate: expect.any(String),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
             ScriptId: 1,
             Parameters: [{ Key: "arg1", Value: "value1" }],
             Priority: 1,
             OfflineActionFlags: {
               SkipsOfflineAgents: true,
-              WakesOfflineAgents: undefined,
+              WakesOfflineAgents: false,
+              OnlyRunsOnOfflineAgents: false,
             },
           },
           { timeoutMs: 90000 }
@@ -344,6 +369,14 @@ describe("Scripts Domain Handler", () => {
         expect(data.waited).toBe(false);
         expect(mockRunAndWait).not.toHaveBeenCalled();
         expect(mockExecuteBatch).toHaveBeenCalled();
+      });
+
+      it("surfaces unsuccessful batch results and their per-target message", async () => {
+        const ScriptResults = [{ EntityId: 1, ResultDetails: { ResultStatus: 1, Message: "Insufficient permissions" } }];
+        mockExecuteBatch.mockResolvedValue({ ContainsUnsuccessfulResults: true, ScriptResults });
+        const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", { script_id: 1, computer_ids: [1], wait: false });
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ contains_unsuccessful_results: true, launch_results: ScriptResults, message: expect.stringContaining("unsuccessful") });
+        expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
       });
 
       it("should report a clear, honest result instead of a raw connection error when waiting is interrupted", async () => {
