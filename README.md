@@ -185,8 +185,11 @@ The server uses a decision tree pattern. Start by navigating to a domain:
 - List computers with filtering options
 - Get computer details
 - Search computers by name
-- Reboot computers remotely
-- Run scripts on computers
+- `cwautomate_computers_reboot` and `cwautomate_computers_run_command` queue commands and return immediately by default with `queued: true` and an `execution_id`. Optional `wait_seconds` waits up to 20 seconds (default 0); `run_command` also accepts legacy `timeout_seconds`, with `wait_seconds` taking precedence.
+- `cwautomate_commands_list` lists catalog command IDs.
+- `cwautomate_computers_command_status` reads an execution using `computer_id` and `execution_id`; poll this tool for completion.
+- Duplicate-command HTTP 400 responses return a non-error `{ queued: false, already_queued: true }` result. Never re-issue after a timeout or duplicate result: read the original execution or check command history in Automate.
+- Run scripts on computers; `cwautomate_computers_run_script` accepts `timeout_seconds` (default 20, capped at 20).
 
 #### Clients
 - List all clients
@@ -201,7 +204,11 @@ The server uses a decision tree pattern. Start by navigating to a domain:
 #### Scripts
 - List available scripts
 - Get script details
-- Execute scripts on computers
+- Execute scripts on computers. `cwautomate_scripts_execute` waits 20 seconds by default, with `timeout_seconds` capped at 20. A partial result means the script is still running; read `cwautomate_scripts_history` and do NOT launch again.
+
+## Troubleshooting
+
+Automate 500 'Encountered unhandled exception' on scripts_execute: the server now logs the request shape (keys only, no parameter values) and Automate's response body. Credential-like values in the response body are redacted and the body is capped at 2000 characters.
 
 ## Development
 

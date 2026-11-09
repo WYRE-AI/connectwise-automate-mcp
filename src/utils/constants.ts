@@ -1,16 +1,17 @@
 /**
- * Shared tool-behaviour constants.
+ * Conduit aborts gateway writes at 30s (conduit src/proxy/unified-router.ts,
+ * AbortSignal.timeout(30_000)). Every wait must finish well under that limit.
  */
+export const MAX_WAIT_SECONDS = 20;
 
-/**
- * How long a script or command run is waited on before a partial result is
- * returned.
- *
- * Automate runs are asynchronous: work is picked up on the agent's next
- * check-in, which defaults to every 5 minutes unless the agent is in FasTalk
- * mode. A wait long enough to cover that would outlast the tool-call timeout
- * most MCP clients enforce, so this stays comfortably under it and a run that
- * takes longer comes back as "still running" with a pointer to the history
- * tools, rather than as a dead connection.
- */
-export const DEFAULT_WAIT_SECONDS = 90;
+/** Scripts return a partial, still-running result after this wait; never relaunch. */
+export const DEFAULT_WAIT_SECONDS = 20;
+
+/** Commands return as soon as Automate queues them; read their execution later. */
+export const DEFAULT_COMMAND_WAIT_SECONDS = 0;
+
+export function clampWaitSeconds(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(MAX_WAIT_SECONDS, Math.max(0, value))
+    : fallback;
+}

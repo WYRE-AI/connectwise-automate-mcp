@@ -119,6 +119,7 @@ describe("mcp-assert baseline contract", () => {
     // cwautomate_computers_. A prefix router advertises it and then answers
     // tools/call with "Unknown tool".
     expect(names).toContain("cwautomate_commands_list");
+    expect(names).toContain("cwautomate_computers_command_status");
 
     const skipped = new Set(["cwautomate_navigate", "cwautomate_status"]);
     for (const name of names) {

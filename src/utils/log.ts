@@ -35,3 +35,47 @@ export function logToolFailure(
   const suffix = parts.length ? ` (${parts.join("; ")})` : "";
   console.error(`[MCP] tool ${toolName} failed: ${label}${suffix}`);
 }
+
+/** Remove credential values from upstream response text before logging it. */
+export function redact(value: string): string {
+  return value
+    .replace(/(["']?authorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\r\n,}]+)/gi, '$1"[REDACTED]"')
+    .replace(/bearer\s+[^\s"'&,}]+/gi, "Bearer [REDACTED]")
+    .replace(/(["']?(?:[\w-]*(?:password|pwd)[\w-]*|secret|token|api[_-]?key|client[_-]?id)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s&,}]+)/gi,
+      "$1\"[REDACTED]\"");
+}
+
+/** Mirror the SDK's JSON body. Parameter count only — never names or values (names can be PII). */
+export function describeScriptExecuteRequest(body: Record<string, unknown>) {
+  const sent = JSON.parse(JSON.stringify({ EntityType: "Computer", ...body }));
+  const parameters = sent.Parameters as unknown[] | undefined;
+  return {
+    keys: Object.keys(sent).sort(),
+    EntityType: sent.EntityType,
+    ScriptId: sent.ScriptId,
+    entity_count: sent.EntityIds?.length ?? 0,
+    Priority: sent.Priority,
+    OfflineActionFlags: sent.OfflineActionFlags,
+    parameters: { count: parameters?.length ?? 0 },
+    has_StartDate: Object.hasOwn(sent, "StartDate"),
+    has_Schedule: Object.hasOwn(sent, "Schedule"),
+  };
+}
+
+/** Add one diagnostic line for upstream server errors; callers still rethrow. */
+export function logScriptExecuteServerError(error: unknown, requestShape: unknown): void {
+  if (typeof error !== "object" || error === null || !("statusCode" in error) ||
+      typeof error.statusCode !== "number" || error.statusCode < 500) return;
+  const response = "response" in error ? error.response : undefined;
+  let body: string | undefined;
+  try {
+    body = typeof response === "string" ? response : JSON.stringify(response);
+  } catch {
+    body = String(response);
+  }
+  console.error("[MCP] cwautomate_scripts_execute upstream 500 diagnostics: " + JSON.stringify({
+    status: error.statusCode,
+    response_body: redact(body ?? "").slice(0, 2000),
+    request_shape: requestShape,
+  }));
+}
