@@ -463,7 +463,6 @@ async function handleCall(
         computer_id: computerId,
         command_id: commandId,
         command_name: commandName,
-        queued: true,
         completed: result.completed,
         status: result.status,
         output: result.output,
@@ -534,6 +533,12 @@ async function handleCall(
     case "cwautomate_computers_command_status": {
       const computerId = Number(args.computer_id);
       const executionId = Number(args.execution_id);
+      if (!Number.isFinite(computerId) || !Number.isFinite(executionId)) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "computer_id and execution_id must be finite numbers." }],
+        };
+      }
       const rows = await client.computers.commandExecutions(computerId, { ids: String(executionId) });
       const execution = rows.find((row) => Number(row.Id) === executionId);
       if (!execution) return jsonResult({ computer_id: computerId, execution_id: executionId, found: false, message: "No command execution with that id on this computer." });
@@ -609,7 +614,6 @@ async function handleCall(
       return jsonResult({
         computer_id: computerId,
         command_id: commandId,
-        queued: true,
         completed: result.completed,
         status: result.status,
         output: result.output,

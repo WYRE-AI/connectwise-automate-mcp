@@ -59,6 +59,44 @@ describe("script execute diagnostics", () => {
     expect(result).toContain("[REDACTED]");
   });
 
+  it.each([
+    'Authorization: Basic basic-credential',
+    '{"Authorization":"Basic json-credential"}',
+    "Authorization: Bearer bearer-credential",
+    "pwd=pwd-credential db_password=password-credential password123=other-credential",
+  ])("redacts authorization and password-like assignments: %s", (body) => {
+    expect(redact(body)).not.toContain("credential");
+    expect(redact(body)).toContain("[REDACTED]");
+  });
+
+  it.each(["circular", "bigint"])("logs diagnostics when a %s response cannot be serialized", (kind) => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      const response = kind === "circular" ? circular : { count: BigInt(1) };
+      expect(() => logScriptExecuteServerError({ statusCode: 500, response }, { keys: ["ScriptId"] })).not.toThrow();
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const line = stderr.mock.calls[0][0] as string;
+      expect(JSON.parse(line.slice(line.indexOf("{")))).toEqual({
+        status: 500, response_body: String(response), request_shape: { keys: ["ScriptId"] },
+      });
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
+  it("preserves safe response text in diagnostics", () => {
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      logScriptExecuteServerError({ statusCode: 500, response: "Unhandled exception" }, {});
+      const line = stderr.mock.calls[0][0] as string;
+      expect(JSON.parse(line.slice(line.indexOf("{"))).response_body).toBe("Unhandled exception");
+    } finally {
+      stderr.mockRestore();
+    }
+  });
+
   it("emits exactly one line with a redacted, bounded body", () => {
     const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

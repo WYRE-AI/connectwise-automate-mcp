@@ -250,6 +250,18 @@ describe("Computers Domain Handler", () => {
       });
     });
 
+    it.each([
+      { computer_id: "invalid", execution_id: 4711 },
+      { computer_id: Infinity, execution_id: 4711 },
+      { computer_id: 1, execution_id: "invalid" },
+      { computer_id: 1, execution_id: -Infinity },
+    ])("rejects non-finite command status IDs: %j", async (args) => {
+      const result = await computersHandler.handleCall("cwautomate_computers_command_status", args);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("computer_id and execution_id must be finite numbers");
+      expect(mockCommandExecutions).not.toHaveBeenCalled();
+    });
+
     it("returns a non-error when the execution is absent", async () => {
       const result = await computersHandler.handleCall("cwautomate_computers_command_status", { computer_id: "1", execution_id: "4711" });
       expect(mockCommandExecutions).toHaveBeenCalledWith(1, { ids: "4711" });
@@ -407,7 +419,6 @@ describe("Computers Domain Handler", () => {
           status: "Success",
           output: "Reboot queued",
           waited_seconds: 6,
-          queued: true,
           execution_id: 4712,
         });
         expect(mockCommands).toHaveBeenCalledTimes(1);
@@ -671,7 +682,6 @@ describe("Computers Domain Handler", () => {
           status: "Success",
           output: "Windows IP Configuration",
           waited_seconds: 4,
-          queued: true,
         });
         expect(mockExecuteCommandAndWait).toHaveBeenCalledWith(
           1,

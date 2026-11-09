@@ -39,8 +39,9 @@ export function logToolFailure(
 /** Remove credential values from upstream response text before logging it. */
 export function redact(value: string): string {
   return value
+    .replace(/(["']?authorization["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\r\n,}]+)/gi, '$1"[REDACTED]"')
     .replace(/bearer\s+[^\s"'&,}]+/gi, "Bearer [REDACTED]")
-    .replace(/(["']?(?:password|secret|token|api[_-]?key|client[_-]?id)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s&,}]+)/gi,
+    .replace(/(["']?(?:[\w-]*(?:password|pwd)[\w-]*|secret|token|api[_-]?key|client[_-]?id)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'[^']*'|[^\s&,}]+)/gi,
       "$1\"[REDACTED]\"");
 }
 
@@ -66,7 +67,12 @@ export function logScriptExecuteServerError(error: unknown, requestShape: unknow
   if (typeof error !== "object" || error === null || !("statusCode" in error) ||
       typeof error.statusCode !== "number" || error.statusCode < 500) return;
   const response = "response" in error ? error.response : undefined;
-  const body = typeof response === "string" ? response : JSON.stringify(response);
+  let body: string | undefined;
+  try {
+    body = typeof response === "string" ? response : JSON.stringify(response);
+  } catch {
+    body = String(response);
+  }
   console.error("[MCP] cwautomate_scripts_execute upstream 500 diagnostics: " + JSON.stringify({
     status: error.statusCode,
     response_body: redact(body ?? "").slice(0, 2000),
