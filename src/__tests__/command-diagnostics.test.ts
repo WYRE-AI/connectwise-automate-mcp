@@ -33,7 +33,7 @@ describe("script execute diagnostics", () => {
     expect(shape).toEqual({
       keys: ["EntityIds", "EntityType", "OfflineActionFlags", "Parameters", "Priority", "ScriptId"],
       EntityType: "Computer", ScriptId: 42, entity_count: 6, Priority: 2,
-      OfflineActionFlags: {}, parameters: { count: 1, keys: ["arg"] },
+      OfflineActionFlags: {}, parameters: { count: 1 },
       has_StartDate: false, has_Schedule: false,
     });
     expect(JSON.stringify(shape)).not.toContain("NEVER_LOG");

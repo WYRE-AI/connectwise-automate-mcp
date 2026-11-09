@@ -45,10 +45,10 @@ export function redact(value: string): string {
       "$1\"[REDACTED]\"");
 }
 
-/** Mirror the SDK's JSON body, exposing parameter keys only, never values. */
+/** Mirror the SDK's JSON body. Parameter count only — never names or values (names can be PII). */
 export function describeScriptExecuteRequest(body: Record<string, unknown>) {
   const sent = JSON.parse(JSON.stringify({ EntityType: "Computer", ...body }));
-  const parameters = sent.Parameters as { Key: string }[] | undefined;
+  const parameters = sent.Parameters as unknown[] | undefined;
   return {
     keys: Object.keys(sent).sort(),
     EntityType: sent.EntityType,
@@ -56,7 +56,7 @@ export function describeScriptExecuteRequest(body: Record<string, unknown>) {
     entity_count: sent.EntityIds?.length ?? 0,
     Priority: sent.Priority,
     OfflineActionFlags: sent.OfflineActionFlags,
-    parameters: { count: parameters?.length ?? 0, keys: parameters?.map((p) => p.Key) ?? [] },
+    parameters: { count: parameters?.length ?? 0 },
     has_StartDate: Object.hasOwn(sent, "StartDate"),
     has_Schedule: Object.hasOwn(sent, "Schedule"),
   };
