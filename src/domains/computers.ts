@@ -32,13 +32,13 @@ import {
   logToolFailure,
 } from "../utils/log.js";
 import {
-  automateMessage,
   buildScriptExecuteBatchBody,
-  isAutomateApiError,
-  LAUNCH_FAILURE,
+  CHECK_RUNS_GUIDANCE,
+  describeLaunchFailure,
   POLL_FAILED_MESSAGE,
   runScriptsAndWait,
   ScriptWaitError,
+  STILL_RUNNING_MESSAGE,
 } from "../utils/script-execute.js";
 
 /**
@@ -219,7 +219,7 @@ function getTools(): Tool[] {
         properties: {
           timeout_seconds: {
             type: "number",
-            description: "Completion wait (default 20, max 20 seconds). Still-running scripts continue; read cwautomate_scripts_history, do NOT launch again.",
+            description: "Completion wait (default 20, max 20 seconds). Still-running scripts continue; read cwautomate_scripts_history and cwautomate_scripts_running, do NOT launch again.",
           },
           computer_id: {
             type: "number",
@@ -501,27 +501,22 @@ async function handleCall(
         const phase = error instanceof ScriptWaitError ? error.phase : "launch";
         const cause = error instanceof ScriptWaitError ? error.cause : error;
         logScriptExecuteServerError(cause, describeScriptExecuteRequest({ ...request, EntityIds: [computerId] }));
-        // A failure before the launch POST completed means nothing was
-        // launched. History-poll HTTP errors never reach here: they are kept
-        // on the result below.
-        if (
-          (phase === "launch" || phase === "baseline") &&
-          isAutomateApiError(cause)
-        ) {
-          const failure = LAUNCH_FAILURE[phase];
+        // Poll-phase errors never reach here: once the launch is accepted
+        // they are kept on the result below.
+        const failure = describeLaunchFailure(phase, cause);
+        if (failure) {
           logToolFailure("cwautomate_computers_run_script", cause, failure.log);
           return {
             ...jsonResult({
               computer_id: computerId,
               script_id: scriptId,
-              launched: false,
-              status_code: cause.statusCode,
-              automate_message: automateMessage(cause),
-              message: failure.message,
+              ...failure.body,
             }),
             isError: true,
           };
         }
+        // Only a non-HTTP error from the pre-launch history read is left
+        // besides a dropped connection; nothing was launched, so surface it.
         if (!isDroppedConnection(cause)) throw cause;
         logToolFailure(
           "cwautomate_computers_run_script",
@@ -540,14 +535,18 @@ async function handleCall(
                 "the script was launched. This tool made no launch attempt. " +
                 "Check cwautomate_scripts_history if you need to confirm nothing started."
               : "Connection to ConnectWise Automate was interrupted while " +
-                "waiting for the result. The script may still have launched " +
-                "— check cwautomate_scripts_history for this computer rather " +
-                "than assuming it failed."
+                "waiting for the result. The script may still have launched. " +
+                CHECK_RUNS_GUIDANCE
           ),
         });
       }
 
       const pollFailure = result?.pollFailure;
+      const message = pollFailure
+        ? POLL_FAILED_MESSAGE
+        : result?.launched && !result.completed
+          ? STILL_RUNNING_MESSAGE
+          : undefined;
       return {
         ...jsonResult({
           computer_id: computerId,
@@ -562,9 +561,9 @@ async function handleCall(
             ? {
                 status_code: pollFailure.statusCode,
                 automate_message: pollFailure.message,
-                message: POLL_FAILED_MESSAGE,
               }
             : {}),
+          ...(message ? { message } : {}),
         }),
         ...(pollFailure ? { isError: true } : {}),
       };

@@ -310,9 +310,46 @@ describe("Computers Domain Handler", () => {
       const result = await computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 100 });
       expect(result.isError).toBe(true);
       const data = JSON.parse(result.content[0].text);
-      expect(data).toMatchObject({ computer_id: 1, script_id: 100, launched: false, status_code: 500, automate_message: "upstream" });
+      expect(data).toMatchObject({ computer_id: 1, script_id: 100, launched: "unknown", status_code: 500, automate_message: "upstream" });
       expect(stderr.mock.calls[0][0]).toContain("upstream 500 diagnostics");
-      expect(stderr.mock.calls.map(String).join("\n")).toContain("rejected by Automate; this tool made no further launch attempt");
+      expect(stderr.mock.calls.map(String).join("\n")).toContain("launch outcome unknown; this tool made no further launch attempt");
+    });
+
+    describe("launch POST status classification", () => {
+      const launch = () =>
+        computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 101 });
+
+      it.each([400, 401, 403, 404, 422])("reports HTTP %i as not launched", async (statusCode) => {
+        mockScriptsExecuteBatch.mockReset().mockRejectedValueOnce(Object.assign(new Error("refused"), { statusCode }));
+        const result = await launch();
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({ computer_id: 1, launched: false, status_code: statusCode });
+        expect(data.message).toContain("The script was not launched");
+      });
+
+      it.each([408, 500, 502, 503, 504])("reports HTTP %i as unknown, with do-not-relaunch guidance", async (statusCode) => {
+        mockScriptsExecuteBatch.mockReset().mockRejectedValueOnce(Object.assign(new Error("upstream"), { statusCode }));
+        const result = await launch();
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({ computer_id: 1, launched: "unknown", status_code: statusCode });
+        expect(data.message).not.toContain("was not launched");
+        expect(data.message).toContain("may or may not have been launched");
+        expect(data.message).toContain("cwautomate_scripts_history");
+        expect(data.message).toContain("cwautomate_scripts_running");
+        expect(data.message).toContain("Do not launch the script again");
+      });
+
+      it("reports a 2xx non-JSON reply (a raw error with no status) as unknown, not a thrown error", async () => {
+        mockScriptsExecuteBatch.mockReset().mockRejectedValueOnce(new Error("Expected JSON but received text/html"));
+        const result = await launch();
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data.launched).toBe("unknown");
+        expect(data).not.toHaveProperty("status_code");
+        expect(data.message).toContain("Do not launch the script again");
+      });
     });
   });
 
@@ -702,19 +739,54 @@ describe("Computers Domain Handler", () => {
         );
       });
 
-      it("should not swallow other errors as if they were a transient network failure", async () => {
+      it("does not treat another error as a transient network failure, and does not claim it was not launched", async () => {
         mockScriptsExecuteBatch.mockReset().mockRejectedValue(new Error("Validation error"));
 
-        await expect(
-          computersHandler.handleCall("cwautomate_computers_run_script", {
-            computer_id: 1,
-            script_id: 100,
-          })
-        ).rejects.toThrow("Validation error");
-        expect(stderr).not.toHaveBeenCalled();
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 100,
+        });
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data.launched).toBe("unknown");
+        expect(data.message).not.toContain("was not launched");
+        expect(mockScriptsExecuteBatch).toHaveBeenCalledTimes(1);
       });
 
-      it("returns a structured isError result when Automate rejects the launch with HTTP 500", async () => {
+      it("keeps the launched/do-not-relaunch result when the poll fails with a non-HTTP error", async () => {
+        const historyCalls = new Map<number, number>();
+        mockScriptsHistoryForComputer.mockImplementation(async () => {
+          const n = (historyCalls.get(1) ?? 0) + 1;
+          historyCalls.set(1, n);
+          if (n === 1) return [];
+          throw new Error("Expected JSON but received text/html");
+        });
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 202,
+        });
+        expect(mockScriptsExecuteBatch).toHaveBeenCalledTimes(1);
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({ computer_id: 1, launched: true, completed: false });
+        expect(data.message).toContain("Do not launch the script again");
+        expect(data.message).toContain("cwautomate_scripts_running");
+      });
+
+      it("tells the caller not to relaunch when the wait ends with the script still running", async () => {
+        mockScriptsHistoryForComputer.mockReset().mockResolvedValue([]);
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 202,
+          timeout_seconds: 0,
+        });
+        expect(result.isError).toBeUndefined();
+        const data = JSON.parse(result.content[0].text);
+        expect(data.message).toContain("Do not launch the script again");
+        expect(data.message).toContain("cwautomate_scripts_running");
+      });
+
+      it("returns a structured isError result with an unknown outcome when the launch gets HTTP 500", async () => {
         const error = Object.assign(new Error("Server error: 500 Internal Server Error: Encountered unhandled exception."), {
           name: "ConnectWiseAutomateServerError",
           statusCode: 500,
@@ -729,10 +801,11 @@ describe("Computers Domain Handler", () => {
         expect(data).toMatchObject({
           computer_id: 1,
           script_id: 202,
-          launched: false,
+          launched: "unknown",
           status_code: 500,
         });
         expect(data.automate_message).toContain("Encountered unhandled exception.");
+        expect(data.message).toContain("Do not launch the script again");
         expect(stderr).toHaveBeenCalled();
       });
 

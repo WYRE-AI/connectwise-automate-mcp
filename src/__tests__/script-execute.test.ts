@@ -5,6 +5,7 @@ import {
   SCRIPT_HISTORY_WINDOW,
   automateMessage,
   buildScriptExecuteBatchBody,
+  describeLaunchFailure,
   isAutomateApiError,
   runScriptsAndWait,
   toParameterPairs,
@@ -63,6 +64,45 @@ describe("isAutomateApiError", () => {
     expect(isAutomateApiError(new Error("Validation error"))).toBe(false);
     expect(isAutomateApiError(null)).toBe(false);
     expect(automateMessage({ message: "x".repeat(600) })).toHaveLength(500);
+  });
+});
+
+describe("describeLaunchFailure", () => {
+  const httpError = (statusCode: number) =>
+    Object.assign(new Error(`HTTP ${statusCode}`), { statusCode });
+
+  it.each([400, 401, 403, 404, 422])("reports HTTP %i on the launch POST as not launched", (status) => {
+    const report = describeLaunchFailure("launch", httpError(status));
+    expect(report?.body).toMatchObject({ launched: false, status_code: status });
+    expect(report?.body.message).toContain("The script was not launched");
+  });
+
+  it.each([408, 429, 500, 502, 503, 504])("reports HTTP %i on the launch POST as unknown, never not launched", (status) => {
+    const report = describeLaunchFailure("launch", httpError(status));
+    expect(report?.body).toMatchObject({ launched: "unknown", status_code: status });
+    const message = String(report?.body.message);
+    expect(message).not.toContain("was not launched");
+    expect(message).toContain("may or may not have been launched");
+    expect(message).toContain("cwautomate_scripts_history");
+    expect(message).toContain("cwautomate_scripts_running");
+    expect(message).toContain("Do not launch the script again");
+  });
+
+  it("reports a raw launch error (for example a 2xx non-JSON reply) as unknown", () => {
+    const report = describeLaunchFailure("launch", new Error("Expected JSON but received text/html"));
+    expect(report?.body).toMatchObject({ launched: "unknown" });
+    expect(report?.body).not.toHaveProperty("status_code");
+    expect(String(report?.body.message)).toContain("Do not launch the script again");
+  });
+
+  it("reports an Automate HTTP error before the launch as not launched, whatever its status", () => {
+    const report = describeLaunchFailure("baseline", httpError(503));
+    expect(report?.body).toMatchObject({ launched: false, status_code: 503 });
+  });
+
+  it("leaves a dropped connection, and a non-HTTP baseline error, to the caller", () => {
+    expect(describeLaunchFailure("launch", new TypeError("terminated"))).toBeUndefined();
+    expect(describeLaunchFailure("baseline", new Error("unexpected"))).toBeUndefined();
   });
 });
 
@@ -159,22 +199,33 @@ describe("runScriptsAndWait", () => {
     ]);
   });
 
-  it("throws phase poll for a poll error that is neither transient nor an Automate HTTP error", async () => {
-    const error = new Error("unexpected");
-    let historyCalls = 0;
+  it("keeps a non-HTTP poll error on the target and still returns the other targets' results", async () => {
+    const polled = new Set<number>();
     const scripts = {
-      historyForComputer: async () => {
-        historyCalls += 1;
-        if (historyCalls === 1) return [];
-        throw error;
+      historyForComputer: async (computerId: number) => {
+        if (!polled.has(computerId)) {
+          polled.add(computerId);
+          return [];
+        }
+        if (computerId === 10) throw new Error("Expected JSON but received an HTML page");
+        return [{ Id: 44, ScriptId: 101, Status: "Completed", State: "Success" }];
       },
       executeBatch: async () => ({ ScriptResults: [], ContainsUnsuccessfulResults: false }),
     };
-    await expect(runScriptsAndWait(scripts, request, { timeoutMs: 20_000 })).rejects.toMatchObject({
-      name: "ScriptWaitError",
-      phase: "poll",
-      cause: error,
-    });
+    const results = await runScriptsAndWait(
+      scripts,
+      buildScriptExecuteBatchBody({ scriptId: 101, computerIds: [10, 11] }),
+      { timeoutMs: 20_000 }
+    );
+    expect(results).toEqual([
+      expect.objectContaining({
+        computerId: 10,
+        launched: true,
+        completed: false,
+        pollFailure: { statusCode: undefined, message: "Expected JSON but received an HTML page" },
+      }),
+      expect.objectContaining({ computerId: 11, launched: true, completed: true, state: "Success" }),
+    ]);
   });
 
   it("makes no history request after the launch when the timeout is zero", async () => {

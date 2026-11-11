@@ -25,13 +25,13 @@ import {
   logToolFailure,
 } from "../utils/log.js";
 import {
-  automateMessage,
   buildScriptExecuteBatchBody,
-  isAutomateApiError,
-  LAUNCH_FAILURE,
+  CHECK_RUNS_GUIDANCE,
+  describeLaunchFailure,
   POLL_FAILED_MESSAGE,
   runScriptsAndWait,
   ScriptWaitError,
+  STILL_RUNNING_MESSAGE,
 } from "../utils/script-execute.js";
 
 /**
@@ -125,7 +125,7 @@ function getTools(): Tool[] {
             type: "number",
             description:
               `How long to wait for completion before returning a partial ` +
-              `result (default: ${DEFAULT_WAIT_SECONDS}, max 20 seconds). Read cwautomate_scripts_history for a still-running run; do NOT launch again. The script keeps ` +
+              `result (default: ${DEFAULT_WAIT_SECONDS}, max 20 seconds). Read cwautomate_scripts_history and cwautomate_scripts_running for a still-running run; do NOT launch again. The script keeps ` +
               `running server-side either way.`,
           },
           skip_offline: {
@@ -252,25 +252,19 @@ async function handleCall(
             error,
             describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
           );
-          if (isAutomateApiError(error)) {
-            logToolFailure(
-              "cwautomate_scripts_execute",
-              error,
-              LAUNCH_FAILURE.launch.log
-            );
+          // Only a dropped connection is left after the shared classifier.
+          const failure = describeLaunchFailure("launch", error);
+          if (failure) {
+            logToolFailure("cwautomate_scripts_execute", error, failure.log);
             return {
               ...jsonResult({
                 script_id: scriptId,
                 computer_ids: computerIds,
-                launched: false,
-                status_code: error.statusCode,
-                automate_message: automateMessage(error),
-                message: LAUNCH_FAILURE.launch.message,
+                ...failure.body,
               }),
               isError: true,
             };
           }
-          if (!isDroppedConnection(error)) throw error;
           logToolFailure(
             "cwautomate_scripts_execute",
             error,
@@ -292,12 +286,11 @@ async function handleCall(
               ? { execution_id: ambiguous.id }
               : {}),
             message: ambiguous
-              ? `${ambiguous.message} Check cwautomate_scripts_history for each computer before launching again.`
+              ? `${ambiguous.message} ${CHECK_RUNS_GUIDANCE}`
               : "Connection to ConnectWise Automate was interrupted while " +
                 "launching the script. It may or may not have been queued. " +
                 "The request was not retried because a retry can run it " +
-                "twice. Check cwautomate_scripts_history for each computer " +
-                "before launching again.",
+                `twice. ${CHECK_RUNS_GUIDANCE}`,
           });
         }
 
@@ -305,7 +298,8 @@ async function handleCall(
           script_id: scriptId,
           waited: false,
           message:
-            "Script launched. Use cwautomate_scripts_history to read the outcome.",
+            "Script launched. Use cwautomate_scripts_history to read the outcome " +
+            "and cwautomate_scripts_running for runs still queued or running.",
           launch_results: batch.ScriptResults,
           contains_unsuccessful_results: batch.ContainsUnsuccessfulResults,
         });
@@ -323,27 +317,22 @@ async function handleCall(
           cause,
           describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
         );
-        // A failure before the launch POST completed means nothing was
-        // launched. History-poll HTTP errors never reach here: they are kept
-        // per target on the results below.
-        if (
-          (phase === "launch" || phase === "baseline") &&
-          isAutomateApiError(cause)
-        ) {
-          const failure = LAUNCH_FAILURE[phase];
+        // Poll-phase errors never reach here: once the launch is accepted
+        // they are kept per target on the results below.
+        const failure = describeLaunchFailure(phase, cause);
+        if (failure) {
           logToolFailure("cwautomate_scripts_execute", cause, failure.log);
           return {
             ...jsonResult({
               script_id: scriptId,
               computer_ids: computerIds,
-              launched: false,
-              status_code: cause.statusCode,
-              automate_message: automateMessage(cause),
-              message: failure.message,
+              ...failure.body,
             }),
             isError: true,
           };
         }
+        // Only a non-HTTP error from the pre-launch history read is left
+        // besides a dropped connection; nothing was launched, so surface it.
         if (!isDroppedConnection(cause)) throw cause;
         logToolFailure(
           "cwautomate_scripts_execute",
@@ -358,8 +347,7 @@ async function handleCall(
               `Check cwautomate_scripts_history if you need to confirm nothing started.`
             : `Connection to ConnectWise Automate was interrupted while ` +
               `waiting for ${computerIds.length} target(s). The script may ` +
-              `still have launched — check cwautomate_scripts_history for ` +
-              `each computer rather than assuming it failed.`;
+              `still have launched. ${CHECK_RUNS_GUIDANCE}`;
         return jsonResult({
           script_id: scriptId,
           summary:
@@ -391,13 +379,18 @@ async function handleCall(
       const pending = runs.filter((r) => r.launched && !r.completed).length;
 
       const pollFailed = runs.some((r) => r.poll_failure);
+      const message = pollFailed
+        ? POLL_FAILED_MESSAGE
+        : pending > 0
+          ? STILL_RUNNING_MESSAGE
+          : undefined;
       return {
         ...jsonResult({
           script_id: scriptId,
           summary:
             `${runs.length} target(s): ${succeeded} succeeded, ${failed} failed, ` +
             `${pending} still running after ${timeoutMs / 1000}s`,
-          ...(pollFailed ? { message: POLL_FAILED_MESSAGE } : {}),
+          ...(message ? { message } : {}),
           runs,
         }),
         ...(pollFailed ? { isError: true } : {}),
