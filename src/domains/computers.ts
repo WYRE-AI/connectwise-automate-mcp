@@ -35,8 +35,7 @@ import {
   automateMessage,
   buildScriptExecuteBatchBody,
   isAutomateApiError,
-  LAUNCH_REJECTED_LOG,
-  LAUNCH_REJECTED_MESSAGE,
+  LAUNCH_FAILURE,
   POLL_FAILED_MESSAGE,
   runScriptsAndWait,
   ScriptWaitError,
@@ -502,17 +501,15 @@ async function handleCall(
         const phase = error instanceof ScriptWaitError ? error.phase : "launch";
         const cause = error instanceof ScriptWaitError ? error.cause : error;
         logScriptExecuteServerError(cause, describeScriptExecuteRequest({ ...request, EntityIds: [computerId] }));
-        // Phase is tracked so a history-poll HTTP error after a successful
-        // launch POST is not reported as launched:false.
+        // A failure before the launch POST completed means nothing was
+        // launched. History-poll HTTP errors never reach here: they are kept
+        // on the result below.
         if (
           (phase === "launch" || phase === "baseline") &&
           isAutomateApiError(cause)
         ) {
-          logToolFailure(
-            "cwautomate_computers_run_script",
-            cause,
-            LAUNCH_REJECTED_LOG
-          );
+          const failure = LAUNCH_FAILURE[phase];
+          logToolFailure("cwautomate_computers_run_script", cause, failure.log);
           return {
             ...jsonResult({
               computer_id: computerId,
@@ -520,26 +517,7 @@ async function handleCall(
               launched: false,
               status_code: cause.statusCode,
               automate_message: automateMessage(cause),
-              message: LAUNCH_REJECTED_MESSAGE,
-            }),
-            isError: true,
-          };
-        }
-        if (phase === "poll" && isAutomateApiError(cause)) {
-          logToolFailure(
-            "cwautomate_computers_run_script",
-            cause,
-            "script history poll failed after launch; this tool made no further launch attempt"
-          );
-          return {
-            ...jsonResult({
-              computer_id: computerId,
-              script_id: scriptId,
-              launched: true,
-              completed: false,
-              status_code: cause.statusCode,
-              automate_message: automateMessage(cause),
-              message: POLL_FAILED_MESSAGE,
+              message: failure.message,
             }),
             isError: true,
           };
@@ -569,16 +547,27 @@ async function handleCall(
         });
       }
 
-      return jsonResult({
-        computer_id: computerId,
-        script_id: scriptId,
-        launched: result?.launched,
-        launch_message: result?.launchMessage,
-        completed: result?.completed,
-        state: result?.state,
-        diagnostic_message: result?.diagnosticMessage,
-        waited_seconds: Math.round((result?.waitedMs ?? 0) / 1000),
-      });
+      const pollFailure = result?.pollFailure;
+      return {
+        ...jsonResult({
+          computer_id: computerId,
+          script_id: scriptId,
+          launched: result?.launched,
+          launch_message: result?.launchMessage,
+          completed: result?.completed,
+          state: result?.state,
+          diagnostic_message: result?.diagnosticMessage,
+          waited_seconds: Math.round((result?.waitedMs ?? 0) / 1000),
+          ...(pollFailure
+            ? {
+                status_code: pollFailure.statusCode,
+                automate_message: pollFailure.message,
+                message: POLL_FAILED_MESSAGE,
+              }
+            : {}),
+        }),
+        ...(pollFailure ? { isError: true } : {}),
+      };
     }
 
     case "cwautomate_computers_command_status": {

@@ -764,6 +764,37 @@ describe("Computers Domain Handler", () => {
         });
         expect(data.message).toContain("Do not launch the script again");
       });
+
+      it("returns a pre-launch history failure as not launched, not as an Automate rejection", async () => {
+        const error = Object.assign(new Error("Server error: 500 Internal Server Error: history failed"), {
+          name: "ConnectWiseAutomateServerError",
+          statusCode: 500,
+        });
+        mockScriptsHistoryForComputer.mockReset().mockRejectedValue(error);
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 3007,
+        });
+        expect(mockScriptsExecuteBatch).not.toHaveBeenCalled();
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({ launched: false, status_code: 500 });
+        expect(data.message).toContain("before launch");
+        expect(data.message).not.toContain("Rejected by Automate");
+      });
+
+      it("makes no history request after the launch when timeout_seconds is 0", async () => {
+        mockScriptsHistoryForComputer.mockReset().mockResolvedValue([]);
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 3007,
+          timeout_seconds: 0,
+        });
+        expect(mockScriptsExecuteBatch).toHaveBeenCalledTimes(1);
+        expect(mockScriptsHistoryForComputer).toHaveBeenCalledTimes(1);
+        expect(result.isError).toBeUndefined();
+        expect(JSON.parse(result.content[0].text)).toMatchObject({ launched: true, completed: false });
+      });
     });
 
     describe("cwautomate_computers_run_command", () => {

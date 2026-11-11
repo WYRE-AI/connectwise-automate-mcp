@@ -8,14 +8,9 @@
  * the request into POST /Batch/ScriptExecute, so these explicit fields go
  * out even before the MCP bumps to that SDK release.
  *
- * Prod logs (EpiOn / Corey, org mYRJKLjH-O0LwrClIqOwf): a sparse body
- * caused Automate HTTP 500 "Encountered unhandled exception."
- *   - cwautomate_scripts_execute: keys EntityIds, EntityType,
- *     OfflineActionFlags, ScriptId; OfflineActionFlags {}; no StartDate or
- *     Schedule (2026-11-10 2:16 PM PT script 363; 2026-11-11 9:37 AM PT
- *     scripts 363 and 3007).
- *   - cwautomate_computers_run_script: keys EntityIds, EntityType, ScriptId
- *     only (2026-11-11 9:37 AM PT script 3007).
+ * Prod logs showed a sparse body (no Parameters, Priority, StartDate or
+ * Schedule, and for cwautomate_scripts_execute an empty OfflineActionFlags)
+ * caused Automate HTTP 500 "Encountered unhandled exception." on both tools.
  */
 
 import { isTransientNetworkError } from "./network-errors.js";
@@ -115,7 +110,6 @@ export function automateMessage(error: { message?: string }): string | undefined
   return message ? message.slice(0, 500) : undefined;
 }
 
-
 /** Newest 100 history rows, same window the SDK uses in runAndWait. */
 export const SCRIPT_HISTORY_WINDOW = {
   orderBy: "HistoryDate desc",
@@ -124,11 +118,19 @@ export const SCRIPT_HISTORY_WINDOW = {
 
 export const DEFAULT_SCRIPT_POLL_INTERVAL_MS = 3_000;
 
-export const LAUNCH_REJECTED_LOG =
-  "rejected by Automate; this tool made no further launch attempt";
-
-export const LAUNCH_REJECTED_MESSAGE =
-  "Rejected by Automate. This tool made no further launch attempt. The script was not launched.";
+/** Log context and caller message for an Automate HTTP error before any launch. */
+export const LAUNCH_FAILURE = {
+  launch: {
+    log: "rejected by Automate; this tool made no further launch attempt",
+    message:
+      "Rejected by Automate. This tool made no further launch attempt. The script was not launched.",
+  },
+  baseline: {
+    log: "script history could not be read before launch; no launch was attempted",
+    message:
+      "Automate could not read script history before launch, so no launch was attempted. The script was not launched.",
+  },
+} as const;
 
 export const POLL_FAILED_MESSAGE =
   "The script launch was accepted by Automate, but reading script history failed. Check cwautomate_scripts_history. Do not launch the script again.";
@@ -182,6 +184,8 @@ export interface ScriptRunWaitResult {
   diagnosticMessage?: string;
   waitedMs: number;
   pollErrors: number;
+  /** Automate HTTP error from a history poll after the launch was accepted. */
+  pollFailure?: { statusCode: number; message?: string };
 }
 
 export interface RunScriptsWaitOptions {
@@ -194,10 +198,12 @@ const defaultDelay = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * Launch via executeBatch, then poll history. Tracks the phase so a poll
- * failure is not reported as a rejected launch (the POST may already have
- * been accepted). Transient network errors during a poll are retried until
- * the deadline, matching the SDK.
+ * Launch via executeBatch, then poll history. Tracks the phase so a failure
+ * before or at the launch is not confused with one after it. An Automate HTTP
+ * error from a history poll is kept on that target's result (`pollFailure`),
+ * so it cannot hide another target's refusal or completion. Transient
+ * network errors during a poll are retried until the deadline, matching the
+ * SDK. A zero timeout makes no history request after the launch.
  */
 export async function runScriptsAndWait(
   scripts: ScriptLaunchClient,
@@ -280,28 +286,33 @@ export async function runScriptsAndWait(
           };
         };
 
-        // First poll immediately so a finished run does not wait a full
-        // interval, and unit tests can complete without fake timers.
-        try {
-          const immediate = inspect(await recentHistory(computerId));
-          if (immediate) return immediate;
-        } catch (error) {
-          if (!isTransientNetworkError(error)) {
-            throw error;
-          }
-          pollErrors += 1;
-        }
-
+        // The first poll is immediate so a finished run does not wait a full
+        // interval; later polls wait. No poll at all when timeoutMs is 0.
+        let firstPoll = true;
         while (Date.now() - startedAt < timeoutMs) {
-          await delay(pollIntervalMs);
+          if (!firstPoll) await delay(pollIntervalMs);
+          firstPoll = false;
           try {
             const found = inspect(await recentHistory(computerId));
             if (found) return found;
           } catch (error) {
-            if (!isTransientNetworkError(error)) {
+            if (isTransientNetworkError(error)) {
+              pollErrors += 1;
+            } else if (isAutomateApiError(error)) {
+              return {
+                computerId,
+                launched: true,
+                completed: false,
+                waitedMs: Date.now() - startedAt,
+                pollErrors,
+                pollFailure: {
+                  statusCode: error.statusCode,
+                  message: automateMessage(error),
+                },
+              };
+            } else {
               throw error;
             }
-            pollErrors += 1;
           }
         }
 

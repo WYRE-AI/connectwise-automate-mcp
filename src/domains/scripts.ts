@@ -28,8 +28,7 @@ import {
   automateMessage,
   buildScriptExecuteBatchBody,
   isAutomateApiError,
-  LAUNCH_REJECTED_LOG,
-  LAUNCH_REJECTED_MESSAGE,
+  LAUNCH_FAILURE,
   POLL_FAILED_MESSAGE,
   runScriptsAndWait,
   ScriptWaitError,
@@ -249,7 +248,7 @@ async function handleCall(
             EntityIds: computerIds,
           });
         } catch (error) {
-        logScriptExecuteServerError(
+          logScriptExecuteServerError(
             error,
             describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
           );
@@ -257,16 +256,16 @@ async function handleCall(
             logToolFailure(
               "cwautomate_scripts_execute",
               error,
-              LAUNCH_REJECTED_LOG
+              LAUNCH_FAILURE.launch.log
             );
             return {
               ...jsonResult({
                 script_id: scriptId,
-              computer_ids: computerIds,
+                computer_ids: computerIds,
                 launched: false,
                 status_code: error.statusCode,
                 automate_message: automateMessage(error),
-                message: LAUNCH_REJECTED_MESSAGE,
+                message: LAUNCH_FAILURE.launch.message,
               }),
               isError: true,
             };
@@ -324,45 +323,23 @@ async function handleCall(
           cause,
           describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
         );
-        // Phase is tracked so a history-poll HTTP error after a successful
-        // launch POST is not reported as launched:false (a caller might
-        // relaunch while the first run continues).
+        // A failure before the launch POST completed means nothing was
+        // launched. History-poll HTTP errors never reach here: they are kept
+        // per target on the results below.
         if (
           (phase === "launch" || phase === "baseline") &&
           isAutomateApiError(cause)
         ) {
-          logToolFailure(
-            "cwautomate_scripts_execute",
-            cause,
-            LAUNCH_REJECTED_LOG
-          );
-          return {
-            ...jsonResult({
-              script_id: scriptId,
-          computer_ids: computerIds,
-              launched: false,
-              status_code: cause.statusCode,
-              automate_message: automateMessage(cause),
-              message: LAUNCH_REJECTED_MESSAGE,
-            }),
-            isError: true,
-          };
-        }
-        if (phase === "poll" && isAutomateApiError(cause)) {
-          logToolFailure(
-            "cwautomate_scripts_execute",
-            cause,
-            "script history poll failed after launch; this tool made no further launch attempt"
-          );
+          const failure = LAUNCH_FAILURE[phase];
+          logToolFailure("cwautomate_scripts_execute", cause, failure.log);
           return {
             ...jsonResult({
               script_id: scriptId,
               computer_ids: computerIds,
-              launched: true,
-              completed: false,
+              launched: false,
               status_code: cause.statusCode,
               automate_message: automateMessage(cause),
-              message: POLL_FAILED_MESSAGE,
+              message: failure.message,
             }),
             isError: true,
           };
@@ -401,6 +378,10 @@ async function handleCall(
         state: result.state,
         diagnostic_message: result.diagnosticMessage,
         waited_seconds: Math.round(result.waitedMs / 1000),
+        poll_failure: result.pollFailure && {
+          status_code: result.pollFailure.statusCode,
+          automate_message: result.pollFailure.message,
+        },
       }));
 
       const succeeded = runs.filter((r) => r.state === "Success").length;
@@ -409,13 +390,18 @@ async function handleCall(
       ).length;
       const pending = runs.filter((r) => r.launched && !r.completed).length;
 
-      return jsonResult({
-        script_id: scriptId,
-        summary:
-          `${runs.length} target(s): ${succeeded} succeeded, ${failed} failed, ` +
-          `${pending} still running after ${timeoutMs / 1000}s`,
-        runs,
-      });
+      const pollFailed = runs.some((r) => r.poll_failure);
+      return {
+        ...jsonResult({
+          script_id: scriptId,
+          summary:
+            `${runs.length} target(s): ${succeeded} succeeded, ${failed} failed, ` +
+            `${pending} still running after ${timeoutMs / 1000}s`,
+          ...(pollFailed ? { message: POLL_FAILED_MESSAGE } : {}),
+          runs,
+        }),
+        ...(pollFailed ? { isError: true } : {}),
+      };
     }
 
     case "cwautomate_scripts_history": {
