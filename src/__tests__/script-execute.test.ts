@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SCRIPT_PRIORITY,
   SCRIPT_SCHEDULE_FREQUENCY_ONCE,
+  SCRIPT_HISTORY_WINDOW,
   automateMessage,
   buildScriptExecuteBatchBody,
   isAutomateApiError,
+  runScriptsAndWait,
   toParameterPairs,
   toPriority,
 } from "../utils/script-execute.js";
@@ -61,5 +63,113 @@ describe("isAutomateApiError", () => {
     expect(isAutomateApiError(new Error("Validation error"))).toBe(false);
     expect(isAutomateApiError(null)).toBe(false);
     expect(automateMessage({ message: "x".repeat(600) })).toHaveLength(500);
+  });
+});
+
+describe("runScriptsAndWait", () => {
+  const request = buildScriptExecuteBatchBody({
+    scriptId: 363,
+    computerIds: [10],
+    now: new Date("2026-11-11T17:37:20.000Z"),
+  });
+
+  it("throws phase launch when the ScriptExecute POST is rejected", async () => {
+    const error = Object.assign(new Error("Encountered unhandled exception."), { statusCode: 500 });
+    const scripts = {
+      historyForComputer: async () => [],
+      executeBatch: async () => {
+        throw error;
+      },
+    };
+    await expect(runScriptsAndWait(scripts, request, { timeoutMs: 0 })).rejects.toMatchObject({
+      name: "ScriptWaitError",
+      phase: "launch",
+      cause: error,
+    });
+  });
+
+  it("throws phase poll when the launch POST succeeds and a later history read fails", async () => {
+    const error = Object.assign(new Error("history failed"), { statusCode: 500 });
+    let historyCalls = 0;
+    const scripts = {
+      historyForComputer: async () => {
+        historyCalls += 1;
+        if (historyCalls === 1) return [];
+        throw error;
+      },
+      executeBatch: async () => ({ ScriptResults: [], ContainsUnsuccessfulResults: false }),
+    };
+    await expect(runScriptsAndWait(scripts, request, { timeoutMs: 0 })).rejects.toMatchObject({
+      name: "ScriptWaitError",
+      phase: "poll",
+      cause: error,
+    });
+    expect(historyCalls).toBeGreaterThanOrEqual(2);
+  });
+
+  it("returns a completed run from the first post-launch history poll", async () => {
+    let historyCalls = 0;
+    const scripts = {
+      historyForComputer: async (computerId: number, params?: { orderBy?: string; pageSize?: number }) => {
+        expect(params).toEqual(SCRIPT_HISTORY_WINDOW);
+        historyCalls += 1;
+        if (historyCalls === 1) return [];
+        return [
+          {
+            Id: 44,
+            ScriptId: 363,
+            Status: "Completed",
+            State: "Success",
+            DiagnosticMessage: "ok",
+          },
+        ];
+      },
+      executeBatch: async (body: { ScriptId: number; EntityIds: number[] }) => {
+        expect(body.ScriptId).toBe(363);
+        expect(body.EntityIds).toEqual([10]);
+        return { ScriptResults: [], ContainsUnsuccessfulResults: false };
+      },
+    };
+    const results = await runScriptsAndWait(scripts, request, { timeoutMs: 0 });
+    expect(results).toEqual([
+      expect.objectContaining({
+        computerId: 10,
+        launched: true,
+        completed: true,
+        state: "Success",
+        diagnosticMessage: "ok",
+      }),
+    ]);
+  });
+
+  it("surfaces a per-target refusal from ContainsUnsuccessfulResults without polling", async () => {
+    let historyCalls = 0;
+    const scripts = {
+      historyForComputer: async () => {
+        historyCalls += 1;
+        return [];
+      },
+      executeBatch: async () => ({
+        ContainsUnsuccessfulResults: true,
+        ScriptResults: [
+          {
+            EntityId: 10,
+            ResultDetails: { ResultStatus: 1, Message: "Insufficient permissions" },
+          },
+        ],
+      }),
+    };
+    const results = await runScriptsAndWait(scripts, request, { timeoutMs: 20_000 });
+    expect(results).toEqual([
+      {
+        computerId: 10,
+        launched: false,
+        launchMessage: "Insufficient permissions",
+        completed: false,
+        waitedMs: 0,
+        pollErrors: 0,
+      },
+    ]);
+    expect(historyCalls).toBe(1);
   });
 });

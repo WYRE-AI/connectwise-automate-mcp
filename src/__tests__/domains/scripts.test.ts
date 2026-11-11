@@ -93,23 +93,38 @@ describe("Scripts Domain Handler", () => {
       Parameters: ["%reboot%", "%delay%"],
     });
     mockRunAndWait.mockResolvedValue([]);
-    mockExecuteBatch.mockResolvedValue({
-      ScriptResults: [],
-      ContainsUnsuccessfulResults: false,
+    let launchedScriptId: number | undefined;
+    mockExecuteBatch.mockImplementation(async (request: { ScriptId: number }) => {
+      launchedScriptId = request.ScriptId;
+      return { ScriptResults: [], ContainsUnsuccessfulResults: false };
     });
-    mockHistoryForComputer.mockResolvedValue([]);
+    const historyCalls = new Map<number, number>();
+    mockHistoryForComputer.mockImplementation(async (computerId: number) => {
+      const n = (historyCalls.get(computerId) ?? 0) + 1;
+      historyCalls.set(computerId, n);
+      if (n === 1 || launchedScriptId === undefined) return [];
+      return [
+        {
+          Id: 900 + computerId,
+          ScriptId: launchedScriptId,
+          Status: "Completed",
+          State: "Success",
+        },
+      ];
+    });
     mockRunningOnComputer.mockResolvedValue([]);
   });
 
 
-  it.each([undefined, 999])("caps script wait %s at 20 seconds", async (timeout_seconds) => {
+  it.each([undefined, 999])("launches through executeBatch when script wait is %s", async (timeout_seconds) => {
     await scriptsHandler.handleCall("cwautomate_scripts_execute", { script_id: 100, computer_ids: [1], timeout_seconds });
-    expect(mockRunAndWait.mock.calls[0][2]).toEqual({ timeoutMs: 20000 });
+    expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
+    expect(mockExecuteBatch.mock.calls[0][0]).toMatchObject({ ScriptId: 100, EntityIds: [1] });
   });
 
   it.each([true, false])("logs diagnostics and returns a structured isError for server errors (wait %s)", async (wait) => {
     const error = Object.assign(new Error("upstream"), { statusCode: 500, response: { password: "private", message: "Encountered unhandled exception" } });
-    (wait ? mockRunAndWait : mockExecuteBatch).mockRejectedValueOnce(error);
+    mockExecuteBatch.mockReset().mockRejectedValueOnce(error);
     const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
       script_id: 100, computer_ids: [1], wait, parameters: { arg: "NEVER_LOG" },
     });
@@ -120,7 +135,7 @@ describe("Scripts Domain Handler", () => {
     expect(stderr.mock.calls[0][0]).toContain("upstream 500 diagnostics");
     expect(stderr.mock.calls[0][0]).not.toContain("private");
     expect(stderr.mock.calls[0][0]).not.toContain("NEVER_LOG");
-    expect(stderr.mock.calls.map(String).join("\n")).toContain("rejected by Automate, not retried");
+    expect(stderr.mock.calls.map(String).join("\n")).toContain("rejected by Automate; this tool made no further launch attempt");
   });
 
   describe("getTools", () => {
@@ -263,33 +278,29 @@ describe("Scripts Domain Handler", () => {
 
     describe("cwautomate_scripts_execute", () => {
       it("should report the real per-computer outcome, not a blanket success", async () => {
-        mockRunAndWait.mockResolvedValue([
-          {
-            computerId: 1,
-            launched: true,
-            completed: true,
-            state: "Success",
-            waitedMs: 6000,
-          },
-          {
-            computerId: 2,
-            launched: true,
-            completed: true,
-            state: "Failure",
-            diagnosticMessage: "Script exited with code 1",
-            waitedMs: 8000,
-          },
-          {
-            computerId: 3,
-            launched: true,
-            completed: false,
-            waitedMs: 20000,
-          },
-        ]);
+        const historyCalls = new Map<number, number>();
+        mockHistoryForComputer.mockImplementation(async (computerId: number) => {
+          const n = (historyCalls.get(computerId) ?? 0) + 1;
+          historyCalls.set(computerId, n);
+          if (n === 1) return [];
+          if (computerId === 1) {
+            return [{ Id: 11, ScriptId: 1, Status: "Completed", State: "Success" }];
+          }
+          if (computerId === 2) {
+            return [{
+              Id: 12,
+              ScriptId: 1,
+              Status: "Completed",
+              State: "Failure",
+              DiagnosticMessage: "Script exited with code 1",
+            }];
+          }
+          return [];
+        });
 
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_execute",
-          { script_id: 1, computer_ids: [1, 2, 3] }
+          { script_id: 1, computer_ids: [1, 2, 3], timeout_seconds: 0 }
         );
 
         expect(result.isError).toBeUndefined();
@@ -304,15 +315,15 @@ describe("Scripts Domain Handler", () => {
       });
 
       it("should surface a launch the server refused", async () => {
-        mockRunAndWait.mockResolvedValue([
-          {
-            computerId: 9,
-            launched: false,
-            launchMessage: "Insufficient permissions",
-            completed: false,
-            waitedMs: 0,
-          },
-        ]);
+        mockExecuteBatch.mockReset().mockResolvedValue({
+          ContainsUnsuccessfulResults: true,
+          ScriptResults: [
+            {
+              EntityId: 9,
+              ResultDetails: { ResultStatus: 1, Message: "Insufficient permissions" },
+            },
+          ],
+        });
 
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_execute",
@@ -326,8 +337,6 @@ describe("Scripts Domain Handler", () => {
       });
 
       it("should map parameters to Key/Value pairs and priority to a number", async () => {
-        mockRunAndWait.mockResolvedValue([]);
-
         await scriptsHandler.handleCall("cwautomate_scripts_execute", {
           script_id: 1,
           computer_ids: [1, 2],
@@ -336,9 +345,7 @@ describe("Scripts Domain Handler", () => {
           skip_offline: true,
         });
 
-        expect(mockRunAndWait).toHaveBeenCalledWith(
-          [1, 2],
-          {
+        expect(mockExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [1, 2],
             ScriptId: 1,
@@ -352,20 +359,15 @@ describe("Scripts Domain Handler", () => {
             UseAgentTime: false,
             StartDate: expect.stringMatching(/^\d{4}-/),
             Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
-          },
-          { timeoutMs: 20000 }
-        );
+        });
       });
 
       it("sends a full default ScriptExecute body when priority and flags are omitted", async () => {
-        mockRunAndWait.mockResolvedValue([]);
         await scriptsHandler.handleCall("cwautomate_scripts_execute", {
           script_id: 363,
           computer_ids: [99],
         });
-        expect(mockRunAndWait).toHaveBeenCalledWith(
-          [99],
-          {
+        expect(mockExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [99],
             ScriptId: 363,
@@ -379,9 +381,7 @@ describe("Scripts Domain Handler", () => {
             UseAgentTime: false,
             StartDate: expect.stringMatching(/^\d{4}-/),
             Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
-          },
-          { timeoutMs: 20000 }
-        );
+        });
       });
 
       it("returns a structured isError result when Automate rejects the launch with HTTP 500", async () => {
@@ -389,7 +389,7 @@ describe("Scripts Domain Handler", () => {
           name: "ConnectWiseAutomateServerError",
           statusCode: 500,
         });
-        mockRunAndWait.mockRejectedValue(error);
+        mockExecuteBatch.mockReset().mockRejectedValue(error);
         const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
           script_id: 363,
           computer_ids: [99],
@@ -403,8 +403,38 @@ describe("Scripts Domain Handler", () => {
           status_code: 500,
         });
         expect(data.automate_message).toContain("Encountered unhandled exception.");
-        expect(data.message).toContain("not retried");
+        expect(data.message).toContain("This tool made no further launch attempt");
         expect(stderr).toHaveBeenCalled();
+      });
+
+      it("does not report launched:false when the launch POST succeeds and history polling fails", async () => {
+        const error = Object.assign(new Error("Server error: 500 Internal Server Error: history failed"), {
+          name: "ConnectWiseAutomateServerError",
+          statusCode: 500,
+        });
+        const historyCalls = new Map<number, number>();
+        mockHistoryForComputer.mockImplementation(async (computerId: number) => {
+          const n = (historyCalls.get(computerId) ?? 0) + 1;
+          historyCalls.set(computerId, n);
+          if (n === 1) return [];
+          throw error;
+        });
+        const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
+          script_id: 363,
+          computer_ids: [99],
+        });
+        expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({
+          script_id: 363,
+          computer_ids: [99],
+          launched: true,
+          completed: false,
+          status_code: 500,
+        });
+        expect(data.message).toContain("Do not launch the script again");
+        expect(data.message).toContain("cwautomate_scripts_history");
       });
 
       it("should launch without polling when wait is false", async () => {
@@ -420,12 +450,12 @@ describe("Scripts Domain Handler", () => {
 
         const data = JSON.parse(result.content[0].text);
         expect(data.waited).toBe(false);
-        expect(mockRunAndWait).not.toHaveBeenCalled();
+        expect(mockHistoryForComputer).not.toHaveBeenCalled();
         expect(mockExecuteBatch).toHaveBeenCalled();
       });
 
       it("should report a clear, honest result instead of a raw connection error when waiting is interrupted", async () => {
-        mockRunAndWait.mockRejectedValue(new TypeError("terminated"));
+        mockExecuteBatch.mockReset().mockRejectedValue(new TypeError("terminated"));
 
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_execute",
@@ -445,7 +475,7 @@ describe("Scripts Domain Handler", () => {
       });
 
       it("should not swallow other errors as if they were a transient network failure", async () => {
-        mockRunAndWait.mockRejectedValue(new Error("Validation error"));
+        mockExecuteBatch.mockReset().mockRejectedValue(new Error("Validation error"));
 
         await expect(
           scriptsHandler.handleCall("cwautomate_scripts_execute", {

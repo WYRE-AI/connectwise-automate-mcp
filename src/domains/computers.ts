@@ -35,6 +35,11 @@ import {
   automateMessage,
   buildScriptExecuteBatchBody,
   isAutomateApiError,
+  LAUNCH_REJECTED_LOG,
+  LAUNCH_REJECTED_MESSAGE,
+  POLL_FAILED_MESSAGE,
+  runScriptsAndWait,
+  ScriptWaitError,
 } from "../utils/script-execute.js";
 
 /**
@@ -488,42 +493,61 @@ async function handleCall(
       });
       let result;
       try {
-        [result] = await client.scripts.runAndWait(
-          [computerId],
+        [result] = await runScriptsAndWait(
+          client.scripts,
           request,
           { timeoutMs: clampWaitSeconds(args.timeout_seconds, DEFAULT_WAIT_SECONDS) * 1000 }
         );
       } catch (error) {
-        logScriptExecuteServerError(error, describeScriptExecuteRequest({ ...request, EntityIds: [computerId] }));
-        // runAndWait launches the script and then polls for its result over
-        // several requests. If a transient network failure hits mid-poll,
-        // we genuinely don't know whether the script already launched —
-        // retrying could run it a second time, so report that honestly
-        // instead of guessing either way. See network-errors.ts for what this
-        // failure looks like and why it happens.
-        if (isAutomateApiError(error)) {
+        const phase = error instanceof ScriptWaitError ? error.phase : "launch";
+        const cause = error instanceof ScriptWaitError ? error.cause : error;
+        logScriptExecuteServerError(cause, describeScriptExecuteRequest({ ...request, EntityIds: [computerId] }));
+        // Phase is tracked so a history-poll HTTP error after a successful
+        // launch POST is not reported as launched:false.
+        if (
+          (phase === "launch" || phase === "baseline") &&
+          isAutomateApiError(cause)
+        ) {
           logToolFailure(
             "cwautomate_computers_run_script",
-            error,
-            "rejected by Automate, not retried"
+            cause,
+            LAUNCH_REJECTED_LOG
           );
           return {
             ...jsonResult({
               computer_id: computerId,
               script_id: scriptId,
               launched: false,
-              status_code: error.statusCode,
-              automate_message: automateMessage(error),
-              message:
-                "Rejected by Automate, not retried. The script was not launched.",
+              status_code: cause.statusCode,
+              automate_message: automateMessage(cause),
+              message: LAUNCH_REJECTED_MESSAGE,
             }),
             isError: true,
           };
         }
-        if (!isDroppedConnection(error)) throw error;
+        if (phase === "poll" && isAutomateApiError(cause)) {
+          logToolFailure(
+            "cwautomate_computers_run_script",
+            cause,
+            "script history poll failed after launch; this tool made no further launch attempt"
+          );
+          return {
+            ...jsonResult({
+              computer_id: computerId,
+              script_id: scriptId,
+              launched: true,
+              completed: false,
+              status_code: cause.statusCode,
+              automate_message: automateMessage(cause),
+              message: POLL_FAILED_MESSAGE,
+            }),
+            isError: true,
+          };
+        }
+        if (!isDroppedConnection(cause)) throw cause;
         logToolFailure(
           "cwautomate_computers_run_script",
-          error,
+          cause,
           "connection to ConnectWise Automate terminated while launching " +
             "the script or polling for its result"
         );
@@ -532,11 +556,15 @@ async function handleCall(
           script_id: scriptId,
           completed: false,
           message: droppedConnectionMessage(
-            error,
-            "Connection to ConnectWise Automate was interrupted while " +
-              "waiting for the result. The script may still have launched " +
-              "— check cwautomate_scripts_history for this computer rather " +
-              "than assuming it failed."
+            cause,
+            phase === "baseline"
+              ? "Connection to ConnectWise Automate was interrupted before " +
+                "the script was launched. This tool made no launch attempt. " +
+                "Check cwautomate_scripts_history if you need to confirm nothing started."
+              : "Connection to ConnectWise Automate was interrupted while " +
+                "waiting for the result. The script may still have launched " +
+                "— check cwautomate_scripts_history for this computer rather " +
+                "than assuming it failed."
           ),
         });
       }

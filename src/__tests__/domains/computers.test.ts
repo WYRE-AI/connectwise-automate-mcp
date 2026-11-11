@@ -10,6 +10,8 @@ const {
   mockComputersList,
   mockComputersGet,
   mockScriptsRunAndWait,
+  mockScriptsExecuteBatch,
+  mockScriptsHistoryForComputer,
   mockCommands,
   mockExecuteCommandAndWait,
   mockExecuteCommand,
@@ -19,6 +21,8 @@ const {
   const mockComputersList = vi.fn();
   const mockComputersGet = vi.fn();
   const mockScriptsRunAndWait = vi.fn();
+  const mockScriptsExecuteBatch = vi.fn();
+  const mockScriptsHistoryForComputer = vi.fn();
   const mockCommands = vi.fn();
   const mockExecuteCommandAndWait = vi.fn();
   const mockExecuteCommand = vi.fn();
@@ -35,6 +39,8 @@ const {
     },
     scripts: {
       runAndWait: mockScriptsRunAndWait,
+      executeBatch: mockScriptsExecuteBatch,
+      historyForComputer: mockScriptsHistoryForComputer,
     },
   };
 
@@ -42,6 +48,8 @@ const {
     mockComputersList,
     mockComputersGet,
     mockScriptsRunAndWait,
+    mockScriptsExecuteBatch,
+    mockScriptsHistoryForComputer,
     mockCommands,
     mockExecuteCommandAndWait,
   mockExecuteCommand,
@@ -77,6 +85,8 @@ describe("Computers Domain Handler", () => {
     mockComputersList.mockClear();
     mockComputersGet.mockClear();
     mockScriptsRunAndWait.mockClear();
+    mockScriptsExecuteBatch.mockClear();
+    mockScriptsHistoryForComputer.mockClear();
     mockCommands.mockClear();
     mockExecuteCommandAndWait.mockClear();
     mockExecuteCommand.mockReset().mockResolvedValue({ Id: 4711, Status: "Pending" });
@@ -102,6 +112,25 @@ describe("Computers Domain Handler", () => {
         waitedMs: 5000,
       },
     ]);
+    let launchedScriptId: number | undefined;
+    mockScriptsExecuteBatch.mockImplementation(async (request: { ScriptId: number }) => {
+      launchedScriptId = request.ScriptId;
+      return { ScriptResults: [], ContainsUnsuccessfulResults: false };
+    });
+    const historyCalls = new Map<number, number>();
+    mockScriptsHistoryForComputer.mockImplementation(async (computerId: number) => {
+      const n = (historyCalls.get(computerId) ?? 0) + 1;
+      historyCalls.set(computerId, n);
+      if (n === 1 || launchedScriptId === undefined) return [];
+      return [
+        {
+          Id: 900 + computerId,
+          ScriptId: launchedScriptId,
+          Status: "Completed",
+          State: "Success",
+        },
+      ];
+    });
     // The catalog is server-defined; a reboot is just one entry in it.
     mockCommands.mockResolvedValue([
       { Id: "2", Name: "Command Prompt", Level: 1 },
@@ -271,18 +300,19 @@ describe("Computers Domain Handler", () => {
 
     it("caps the computer script wait", async () => {
       await computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 100, timeout_seconds: 999 });
-      expect(mockScriptsRunAndWait.mock.calls[0][2]).toEqual({ timeoutMs: 20000 });
+      expect(mockScriptsExecuteBatch).toHaveBeenCalledTimes(1);
+      expect(mockScriptsExecuteBatch.mock.calls[0][0]).toMatchObject({ ScriptId: 100, EntityIds: [1] });
     });
 
     it("logs a computer script server error and returns a structured isError result", async () => {
       const error = Object.assign(new Error("upstream"), { statusCode: 500, response: "Encountered unhandled exception" });
-      mockScriptsRunAndWait.mockRejectedValue(error);
+      mockScriptsExecuteBatch.mockReset().mockRejectedValue(error);
       const result = await computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 100 });
       expect(result.isError).toBe(true);
       const data = JSON.parse(result.content[0].text);
       expect(data).toMatchObject({ computer_id: 1, script_id: 100, launched: false, status_code: 500, automate_message: "upstream" });
       expect(stderr.mock.calls[0][0]).toContain("upstream 500 diagnostics");
-      expect(stderr.mock.calls.map(String).join("\n")).toContain("rejected by Automate, not retried");
+      expect(stderr.mock.calls.map(String).join("\n")).toContain("rejected by Automate; this tool made no further launch attempt");
     });
   });
 
@@ -586,9 +616,7 @@ describe("Computers Domain Handler", () => {
         const data = JSON.parse(result.content[0].text);
         expect(data.completed).toBe(true);
         expect(data.state).toBe("Success");
-        expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
-          [1],
-          {
+        expect(mockScriptsExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [1],
             ScriptId: 100,
@@ -602,22 +630,23 @@ describe("Computers Domain Handler", () => {
             UseAgentTime: false,
             StartDate: expect.stringMatching(/^\d{4}-/),
             Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
-          },
-          { timeoutMs: 20000 }
-        );
+        });
       });
 
       it("should report a failed run rather than a blanket success", async () => {
-        mockScriptsRunAndWait.mockResolvedValue([
-          {
-            computerId: 1,
-            launched: true,
-            completed: true,
-            state: "Failure",
-            diagnosticMessage: "Script exited with code 1",
-            waitedMs: 7000,
-          },
-        ]);
+        const historyCalls = new Map<number, number>();
+        mockScriptsHistoryForComputer.mockImplementation(async (computerId: number) => {
+          const n = (historyCalls.get(computerId) ?? 0) + 1;
+          historyCalls.set(computerId, n);
+          if (n === 1) return [];
+          return [{
+            Id: 12,
+            ScriptId: 100,
+            Status: "Completed",
+            State: "Failure",
+            DiagnosticMessage: "Script exited with code 1",
+          }];
+        });
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_run_script",
@@ -636,9 +665,7 @@ describe("Computers Domain Handler", () => {
           parameters: { arg1: "value1" },
         });
 
-        expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
-          [1],
-          {
+        expect(mockScriptsExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [1],
             ScriptId: 100,
@@ -652,13 +679,11 @@ describe("Computers Domain Handler", () => {
             UseAgentTime: false,
             StartDate: expect.stringMatching(/^\d{4}-/),
             Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
-          },
-          { timeoutMs: 20000 }
-        );
+        });
       });
 
       it("should report a clear, honest result instead of a raw connection error when waiting is interrupted", async () => {
-        mockScriptsRunAndWait.mockRejectedValue(new TypeError("terminated"));
+        mockScriptsExecuteBatch.mockReset().mockRejectedValue(new TypeError("terminated"));
 
         const result = await computersHandler.handleCall(
           "cwautomate_computers_run_script",
@@ -678,7 +703,7 @@ describe("Computers Domain Handler", () => {
       });
 
       it("should not swallow other errors as if they were a transient network failure", async () => {
-        mockScriptsRunAndWait.mockRejectedValue(new Error("Validation error"));
+        mockScriptsExecuteBatch.mockReset().mockRejectedValue(new Error("Validation error"));
 
         await expect(
           computersHandler.handleCall("cwautomate_computers_run_script", {
@@ -694,7 +719,7 @@ describe("Computers Domain Handler", () => {
           name: "ConnectWiseAutomateServerError",
           statusCode: 500,
         });
-        mockScriptsRunAndWait.mockRejectedValue(error);
+        mockScriptsExecuteBatch.mockReset().mockRejectedValue(error);
         const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
           computer_id: 1,
           script_id: 3007,
@@ -709,6 +734,35 @@ describe("Computers Domain Handler", () => {
         });
         expect(data.automate_message).toContain("Encountered unhandled exception.");
         expect(stderr).toHaveBeenCalled();
+      });
+
+      it("does not report launched:false when the launch POST succeeds and history polling fails", async () => {
+        const error = Object.assign(new Error("Server error: 500 Internal Server Error: history failed"), {
+          name: "ConnectWiseAutomateServerError",
+          statusCode: 500,
+        });
+        const historyCalls = new Map<number, number>();
+        mockScriptsHistoryForComputer.mockImplementation(async () => {
+          const n = (historyCalls.get(1) ?? 0) + 1;
+          historyCalls.set(1, n);
+          if (n === 1) return [];
+          throw error;
+        });
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 3007,
+        });
+        expect(mockScriptsExecuteBatch).toHaveBeenCalledTimes(1);
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({
+          computer_id: 1,
+          script_id: 3007,
+          launched: true,
+          completed: false,
+          status_code: 500,
+        });
+        expect(data.message).toContain("Do not launch the script again");
       });
     });
 
