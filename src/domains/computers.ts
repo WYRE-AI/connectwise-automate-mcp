@@ -31,6 +31,11 @@ import {
   logScriptExecuteServerError,
   logToolFailure,
 } from "../utils/log.js";
+import {
+  automateMessage,
+  buildScriptExecuteBatchBody,
+  isAutomateApiError,
+} from "../utils/script-execute.js";
 
 /**
  * Every result carries the launch execution id for later reads. Unfinished
@@ -204,7 +209,7 @@ function getTools(): Tool[] {
     },
     {
       name: "cwautomate_computers_run_script",
-      description: "Run a script on a specific computer",
+      description: "Run a script on a specific computer. Uses the same full ScheduleScriptBatchRequest body as cwautomate_scripts_execute (StartDate now, once/run-now schedule, explicit offline flags, priority normal=2).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -476,12 +481,11 @@ async function handleCall(
       const scriptId = args.script_id as number;
       const parameters = args.parameters as Record<string, string> | undefined;
 
-      const request = {
-        ScriptId: scriptId,
-        Parameters: parameters
-          ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
-          : undefined,
-      };
+      const request = buildScriptExecuteBatchBody({
+        scriptId,
+        computerIds: [computerId],
+        parameters,
+      });
       let result;
       try {
         [result] = await client.scripts.runAndWait(
@@ -497,6 +501,25 @@ async function handleCall(
         // retrying could run it a second time, so report that honestly
         // instead of guessing either way. See network-errors.ts for what this
         // failure looks like and why it happens.
+        if (isAutomateApiError(error)) {
+          logToolFailure(
+            "cwautomate_computers_run_script",
+            error,
+            "rejected by Automate, not retried"
+          );
+          return {
+            ...jsonResult({
+              computer_id: computerId,
+              script_id: scriptId,
+              launched: false,
+              status_code: error.statusCode,
+              automate_message: automateMessage(error),
+              message:
+                "Rejected by Automate, not retried. The script was not launched.",
+            }),
+            isError: true,
+          };
+        }
         if (!isDroppedConnection(error)) throw error;
         logToolFailure(
           "cwautomate_computers_run_script",

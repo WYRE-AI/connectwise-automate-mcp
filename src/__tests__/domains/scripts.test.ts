@@ -107,16 +107,20 @@ describe("Scripts Domain Handler", () => {
     expect(mockRunAndWait.mock.calls[0][2]).toEqual({ timeoutMs: 20000 });
   });
 
-  it.each([true, false])("logs one diagnostic and rethrows server errors (wait %s)", async (wait) => {
+  it.each([true, false])("logs diagnostics and returns a structured isError for server errors (wait %s)", async (wait) => {
     const error = Object.assign(new Error("upstream"), { statusCode: 500, response: { password: "private", message: "Encountered unhandled exception" } });
     (wait ? mockRunAndWait : mockExecuteBatch).mockRejectedValueOnce(error);
-    await expect(scriptsHandler.handleCall("cwautomate_scripts_execute", {
+    const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
       script_id: 100, computer_ids: [1], wait, parameters: { arg: "NEVER_LOG" },
-    })).rejects.toBe(error);
-    expect(stderr).toHaveBeenCalledTimes(1);
+    });
+    expect(result.isError).toBe(true);
+    const data = JSON.parse(result.content[0].text);
+    expect(data).toMatchObject({ launched: false, status_code: 500, script_id: 100, computer_ids: [1] });
+    expect(data.automate_message).toBe("upstream");
     expect(stderr.mock.calls[0][0]).toContain("upstream 500 diagnostics");
     expect(stderr.mock.calls[0][0]).not.toContain("private");
     expect(stderr.mock.calls[0][0]).not.toContain("NEVER_LOG");
+    expect(stderr.mock.calls.map(String).join("\n")).toContain("rejected by Automate, not retried");
   });
 
   describe("getTools", () => {
@@ -335,16 +339,72 @@ describe("Scripts Domain Handler", () => {
         expect(mockRunAndWait).toHaveBeenCalledWith(
           [1, 2],
           {
+            EntityType: "Computer",
+            EntityIds: [1, 2],
             ScriptId: 1,
             Parameters: [{ Key: "arg1", Value: "value1" }],
             Priority: 1,
             OfflineActionFlags: {
               SkipsOfflineAgents: true,
-              WakesOfflineAgents: undefined,
+              WakesOfflineAgents: false,
+              OnlyRunsOnOfflineAgents: false,
             },
+            UseAgentTime: false,
+            StartDate: expect.stringMatching(/^\d{4}-/),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
           },
           { timeoutMs: 20000 }
         );
+      });
+
+      it("sends a full default ScriptExecute body when priority and flags are omitted", async () => {
+        mockRunAndWait.mockResolvedValue([]);
+        await scriptsHandler.handleCall("cwautomate_scripts_execute", {
+          script_id: 363,
+          computer_ids: [99],
+        });
+        expect(mockRunAndWait).toHaveBeenCalledWith(
+          [99],
+          {
+            EntityType: "Computer",
+            EntityIds: [99],
+            ScriptId: 363,
+            Parameters: [],
+            Priority: 2,
+            OfflineActionFlags: {
+              SkipsOfflineAgents: false,
+              WakesOfflineAgents: false,
+              OnlyRunsOnOfflineAgents: false,
+            },
+            UseAgentTime: false,
+            StartDate: expect.stringMatching(/^\d{4}-/),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
+          },
+          { timeoutMs: 20000 }
+        );
+      });
+
+      it("returns a structured isError result when Automate rejects the launch with HTTP 500", async () => {
+        const error = Object.assign(new Error("Server error: 500 Internal Server Error: Encountered unhandled exception."), {
+          name: "ConnectWiseAutomateServerError",
+          statusCode: 500,
+        });
+        mockRunAndWait.mockRejectedValue(error);
+        const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
+          script_id: 363,
+          computer_ids: [99],
+        });
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({
+          script_id: 363,
+          computer_ids: [99],
+          launched: false,
+          status_code: 500,
+        });
+        expect(data.automate_message).toContain("Encountered unhandled exception.");
+        expect(data.message).toContain("not retried");
+        expect(stderr).toHaveBeenCalled();
       });
 
       it("should launch without polling when wait is false", async () => {

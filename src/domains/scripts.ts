@@ -24,36 +24,11 @@ import {
   logScriptExecuteServerError,
   logToolFailure,
 } from "../utils/log.js";
-
-/**
- * Convert the tool's key/value parameter object into the Key/Value pair array
- * the batch script endpoint expects.
- */
-function toParameterPairs(
-  parameters?: Record<string, string>
-): { Key: string; Value: string }[] | undefined {
-  if (!parameters) return undefined;
-  return Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }));
-}
-
-/**
- * Map the friendly priority name to the library's numeric priority
- * (1 = high, 2 = normal, 3 = low).
- */
-function toPriority(
-  priority?: "low" | "normal" | "high"
-): number | undefined {
-  switch (priority) {
-    case "high":
-      return 1;
-    case "normal":
-      return 2;
-    case "low":
-      return 3;
-    default:
-      return undefined;
-  }
-}
+import {
+  automateMessage,
+  buildScriptExecuteBatchBody,
+  isAutomateApiError,
+} from "../utils/script-execute.js";
 
 /**
  * Get script domain tools
@@ -111,7 +86,9 @@ function getTools(): Tool[] {
         "Automate has no synchronous run, so this schedules the script and " +
         "polls its history until it finishes, returning the per-computer " +
         "outcome and any diagnostic message. Use the computers domain to find " +
-        "computer IDs first.",
+        "computer IDs first. The launch body is a full ScheduleScriptBatchRequest " +
+        "(StartDate now, once/run-now schedule, explicit offline flags, priority " +
+        "default normal=2).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -132,7 +109,7 @@ function getTools(): Tool[] {
           priority: {
             type: "string",
             enum: ["low", "normal", "high"],
-            description: "Execution priority (default: normal)",
+            description: "Execution priority (default: normal). Mapped to Automate as high=1, normal=2, low=3.",
           },
           wait: {
             type: "boolean",
@@ -247,17 +224,14 @@ async function handleCall(
         clampWaitSeconds(args.timeout_seconds, DEFAULT_WAIT_SECONDS) *
         1000;
 
-      const request = {
-        ScriptId: scriptId,
-        Parameters: toParameterPairs(
-          args.parameters as Record<string, string> | undefined
-        ),
-        Priority: toPriority(priority),
-        OfflineActionFlags: {
-          SkipsOfflineAgents: args.skip_offline as boolean | undefined,
-          WakesOfflineAgents: args.wake_offline as boolean | undefined,
-        },
-      };
+      const request = buildScriptExecuteBatchBody({
+        scriptId,
+        computerIds,
+        parameters: args.parameters as Record<string, string> | undefined,
+        priority,
+        skipOffline: args.skip_offline as boolean | undefined,
+        wakeOffline: args.wake_offline as boolean | undefined,
+      });
 
       if (!wait) {
         // POST /Batch/ScriptExecute is not idempotent. The client already
@@ -274,6 +248,25 @@ async function handleCall(
             error,
             describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
           );
+          if (isAutomateApiError(error)) {
+            logToolFailure(
+              "cwautomate_scripts_execute",
+              error,
+              "rejected by Automate, not retried"
+            );
+            return {
+              ...jsonResult({
+                script_id: scriptId,
+              computer_ids: computerIds,
+                launched: false,
+                status_code: error.statusCode,
+                automate_message: automateMessage(error),
+                message:
+                  "Rejected by Automate, not retried. The script was not launched.",
+              }),
+              isError: true,
+            };
+          }
           if (!isDroppedConnection(error)) throw error;
           logToolFailure(
             "cwautomate_scripts_execute",
@@ -330,6 +323,25 @@ async function handleCall(
         // we genuinely don't know whether the script already launched for
         // some (or all) targets — retrying could run it a second time, so
         // report that honestly instead of guessing either way.
+        if (isAutomateApiError(error)) {
+          logToolFailure(
+            "cwautomate_scripts_execute",
+            error,
+            "rejected by Automate, not retried"
+          );
+          return {
+            ...jsonResult({
+              script_id: scriptId,
+          computer_ids: computerIds,
+              launched: false,
+              status_code: error.statusCode,
+              automate_message: automateMessage(error),
+              message:
+                "Rejected by Automate, not retried. The script was not launched.",
+            }),
+            isError: true,
+          };
+        }
         if (!isDroppedConnection(error)) throw error;
         logToolFailure(
           "cwautomate_scripts_execute",

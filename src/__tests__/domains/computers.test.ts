@@ -274,12 +274,15 @@ describe("Computers Domain Handler", () => {
       expect(mockScriptsRunAndWait.mock.calls[0][2]).toEqual({ timeoutMs: 20000 });
     });
 
-    it("logs a computer script server error and rethrows it", async () => {
+    it("logs a computer script server error and returns a structured isError result", async () => {
       const error = Object.assign(new Error("upstream"), { statusCode: 500, response: "Encountered unhandled exception" });
       mockScriptsRunAndWait.mockRejectedValue(error);
-      await expect(computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 100 })).rejects.toBe(error);
-      expect(stderr).toHaveBeenCalledTimes(1);
+      const result = await computersHandler.handleCall("cwautomate_computers_run_script", { computer_id: 1, script_id: 100 });
+      expect(result.isError).toBe(true);
+      const data = JSON.parse(result.content[0].text);
+      expect(data).toMatchObject({ computer_id: 1, script_id: 100, launched: false, status_code: 500, automate_message: "upstream" });
       expect(stderr.mock.calls[0][0]).toContain("upstream 500 diagnostics");
+      expect(stderr.mock.calls.map(String).join("\n")).toContain("rejected by Automate, not retried");
     });
   });
 
@@ -585,7 +588,21 @@ describe("Computers Domain Handler", () => {
         expect(data.state).toBe("Success");
         expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
           [1],
-          { ScriptId: 100, Parameters: undefined },
+          {
+            EntityType: "Computer",
+            EntityIds: [1],
+            ScriptId: 100,
+            Parameters: [],
+            Priority: 2,
+            OfflineActionFlags: {
+              SkipsOfflineAgents: false,
+              WakesOfflineAgents: false,
+              OnlyRunsOnOfflineAgents: false,
+            },
+            UseAgentTime: false,
+            StartDate: expect.stringMatching(/^\d{4}-/),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
+          },
           { timeoutMs: 20000 }
         );
       });
@@ -622,8 +639,19 @@ describe("Computers Domain Handler", () => {
         expect(mockScriptsRunAndWait).toHaveBeenCalledWith(
           [1],
           {
+            EntityType: "Computer",
+            EntityIds: [1],
             ScriptId: 100,
             Parameters: [{ Key: "arg1", Value: "value1" }],
+            Priority: 2,
+            OfflineActionFlags: {
+              SkipsOfflineAgents: false,
+              WakesOfflineAgents: false,
+              OnlyRunsOnOfflineAgents: false,
+            },
+            UseAgentTime: false,
+            StartDate: expect.stringMatching(/^\d{4}-/),
+            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
           },
           { timeoutMs: 20000 }
         );
@@ -659,6 +687,28 @@ describe("Computers Domain Handler", () => {
           })
         ).rejects.toThrow("Validation error");
         expect(stderr).not.toHaveBeenCalled();
+      });
+
+      it("returns a structured isError result when Automate rejects the launch with HTTP 500", async () => {
+        const error = Object.assign(new Error("Server error: 500 Internal Server Error: Encountered unhandled exception."), {
+          name: "ConnectWiseAutomateServerError",
+          statusCode: 500,
+        });
+        mockScriptsRunAndWait.mockRejectedValue(error);
+        const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 3007,
+        });
+        expect(result.isError).toBe(true);
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({
+          computer_id: 1,
+          script_id: 3007,
+          launched: false,
+          status_code: 500,
+        });
+        expect(data.automate_message).toContain("Encountered unhandled exception.");
+        expect(stderr).toHaveBeenCalled();
       });
     });
 
