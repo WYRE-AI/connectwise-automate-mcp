@@ -31,6 +31,15 @@ import {
   logScriptExecuteServerError,
   logToolFailure,
 } from "../utils/log.js";
+import {
+  buildScriptExecuteBatchBody,
+  CHECK_RUNS_GUIDANCE,
+  describeLaunchFailure,
+  POLL_FAILED_MESSAGE,
+  runScriptsAndWait,
+  ScriptWaitError,
+  STILL_RUNNING_MESSAGE,
+} from "../utils/script-execute.js";
 
 /**
  * Every result carries the launch execution id for later reads. Unfinished
@@ -204,13 +213,13 @@ function getTools(): Tool[] {
     },
     {
       name: "cwautomate_computers_run_script",
-      description: "Run a script on a specific computer",
+      description: "Run a script on a specific computer. Uses the same full ScheduleScriptBatchRequest body as cwautomate_scripts_execute (StartDate now, once/run-now schedule, explicit offline flags, priority normal=2).",
       inputSchema: {
         type: "object" as const,
         properties: {
           timeout_seconds: {
             type: "number",
-            description: "Completion wait (default 20, max 20 seconds). Still-running scripts continue; read cwautomate_scripts_history, do NOT launch again.",
+            description: "Completion wait (default 20, max 20 seconds). Still-running scripts continue; read cwautomate_scripts_history and cwautomate_scripts_running, do NOT launch again.",
           },
           computer_id: {
             type: "number",
@@ -476,31 +485,42 @@ async function handleCall(
       const scriptId = args.script_id as number;
       const parameters = args.parameters as Record<string, string> | undefined;
 
-      const request = {
-        ScriptId: scriptId,
-        Parameters: parameters
-          ? Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }))
-          : undefined,
-      };
+      const request = buildScriptExecuteBatchBody({
+        scriptId,
+        computerIds: [computerId],
+        parameters,
+      });
       let result;
       try {
-        [result] = await client.scripts.runAndWait(
-          [computerId],
+        [result] = await runScriptsAndWait(
+          client.scripts,
           request,
           { timeoutMs: clampWaitSeconds(args.timeout_seconds, DEFAULT_WAIT_SECONDS) * 1000 }
         );
       } catch (error) {
-        logScriptExecuteServerError(error, describeScriptExecuteRequest({ ...request, EntityIds: [computerId] }));
-        // runAndWait launches the script and then polls for its result over
-        // several requests. If a transient network failure hits mid-poll,
-        // we genuinely don't know whether the script already launched —
-        // retrying could run it a second time, so report that honestly
-        // instead of guessing either way. See network-errors.ts for what this
-        // failure looks like and why it happens.
-        if (!isDroppedConnection(error)) throw error;
+        const phase = error instanceof ScriptWaitError ? error.phase : "launch";
+        const cause = error instanceof ScriptWaitError ? error.cause : error;
+        logScriptExecuteServerError(cause, describeScriptExecuteRequest({ ...request, EntityIds: [computerId] }));
+        // Poll-phase errors never reach here: once the launch is accepted
+        // they are kept on the result below.
+        const failure = describeLaunchFailure(phase, cause);
+        if (failure) {
+          logToolFailure("cwautomate_computers_run_script", cause, failure.log);
+          return {
+            ...jsonResult({
+              computer_id: computerId,
+              script_id: scriptId,
+              ...failure.body,
+            }),
+            isError: true,
+          };
+        }
+        // Only a non-HTTP error from the pre-launch history read is left
+        // besides a dropped connection; nothing was launched, so surface it.
+        if (!isDroppedConnection(cause)) throw cause;
         logToolFailure(
           "cwautomate_computers_run_script",
-          error,
+          cause,
           "connection to ConnectWise Automate terminated while launching " +
             "the script or polling for its result"
         );
@@ -509,25 +529,44 @@ async function handleCall(
           script_id: scriptId,
           completed: false,
           message: droppedConnectionMessage(
-            error,
-            "Connection to ConnectWise Automate was interrupted while " +
-              "waiting for the result. The script may still have launched " +
-              "— check cwautomate_scripts_history for this computer rather " +
-              "than assuming it failed."
+            cause,
+            phase === "baseline"
+              ? "Connection to ConnectWise Automate was interrupted before " +
+                "the script was launched. This tool made no launch attempt. " +
+                "Check cwautomate_scripts_history if you need to confirm nothing started."
+              : "Connection to ConnectWise Automate was interrupted while " +
+                "waiting for the result. The script may still have launched. " +
+                CHECK_RUNS_GUIDANCE
           ),
         });
       }
 
-      return jsonResult({
-        computer_id: computerId,
-        script_id: scriptId,
-        launched: result?.launched,
-        launch_message: result?.launchMessage,
-        completed: result?.completed,
-        state: result?.state,
-        diagnostic_message: result?.diagnosticMessage,
-        waited_seconds: Math.round((result?.waitedMs ?? 0) / 1000),
-      });
+      const pollFailure = result?.pollFailure;
+      const message = pollFailure
+        ? POLL_FAILED_MESSAGE
+        : result?.launched && !result.completed
+          ? STILL_RUNNING_MESSAGE
+          : undefined;
+      return {
+        ...jsonResult({
+          computer_id: computerId,
+          script_id: scriptId,
+          launched: result?.launched,
+          launch_message: result?.launchMessage,
+          completed: result?.completed,
+          state: result?.state,
+          diagnostic_message: result?.diagnosticMessage,
+          waited_seconds: Math.round((result?.waitedMs ?? 0) / 1000),
+          ...(pollFailure
+            ? {
+                status_code: pollFailure.statusCode,
+                automate_message: pollFailure.message,
+              }
+            : {}),
+          ...(message ? { message } : {}),
+        }),
+        ...(pollFailure ? { isError: true } : {}),
+      };
     }
 
     case "cwautomate_computers_command_status": {

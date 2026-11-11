@@ -24,36 +24,15 @@ import {
   logScriptExecuteServerError,
   logToolFailure,
 } from "../utils/log.js";
-
-/**
- * Convert the tool's key/value parameter object into the Key/Value pair array
- * the batch script endpoint expects.
- */
-function toParameterPairs(
-  parameters?: Record<string, string>
-): { Key: string; Value: string }[] | undefined {
-  if (!parameters) return undefined;
-  return Object.entries(parameters).map(([Key, Value]) => ({ Key, Value }));
-}
-
-/**
- * Map the friendly priority name to the library's numeric priority
- * (1 = high, 2 = normal, 3 = low).
- */
-function toPriority(
-  priority?: "low" | "normal" | "high"
-): number | undefined {
-  switch (priority) {
-    case "high":
-      return 1;
-    case "normal":
-      return 2;
-    case "low":
-      return 3;
-    default:
-      return undefined;
-  }
-}
+import {
+  buildScriptExecuteBatchBody,
+  CHECK_RUNS_GUIDANCE,
+  describeLaunchFailure,
+  POLL_FAILED_MESSAGE,
+  runScriptsAndWait,
+  ScriptWaitError,
+  STILL_RUNNING_MESSAGE,
+} from "../utils/script-execute.js";
 
 /**
  * Get script domain tools
@@ -111,7 +90,9 @@ function getTools(): Tool[] {
         "Automate has no synchronous run, so this schedules the script and " +
         "polls its history until it finishes, returning the per-computer " +
         "outcome and any diagnostic message. Use the computers domain to find " +
-        "computer IDs first.",
+        "computer IDs first. The launch body is a full ScheduleScriptBatchRequest " +
+        "(StartDate now, once/run-now schedule, explicit offline flags, priority " +
+        "default normal=2).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -132,7 +113,7 @@ function getTools(): Tool[] {
           priority: {
             type: "string",
             enum: ["low", "normal", "high"],
-            description: "Execution priority (default: normal)",
+            description: "Execution priority (default: normal). Mapped to Automate as high=1, normal=2, low=3.",
           },
           wait: {
             type: "boolean",
@@ -144,7 +125,7 @@ function getTools(): Tool[] {
             type: "number",
             description:
               `How long to wait for completion before returning a partial ` +
-              `result (default: ${DEFAULT_WAIT_SECONDS}, max 20 seconds). Read cwautomate_scripts_history for a still-running run; do NOT launch again. The script keeps ` +
+              `result (default: ${DEFAULT_WAIT_SECONDS}, max 20 seconds). Read cwautomate_scripts_history and cwautomate_scripts_running for a still-running run; do NOT launch again. The script keeps ` +
               `running server-side either way.`,
           },
           skip_offline: {
@@ -247,17 +228,14 @@ async function handleCall(
         clampWaitSeconds(args.timeout_seconds, DEFAULT_WAIT_SECONDS) *
         1000;
 
-      const request = {
-        ScriptId: scriptId,
-        Parameters: toParameterPairs(
-          args.parameters as Record<string, string> | undefined
-        ),
-        Priority: toPriority(priority),
-        OfflineActionFlags: {
-          SkipsOfflineAgents: args.skip_offline as boolean | undefined,
-          WakesOfflineAgents: args.wake_offline as boolean | undefined,
-        },
-      };
+      const request = buildScriptExecuteBatchBody({
+        scriptId,
+        computerIds,
+        parameters: args.parameters as Record<string, string> | undefined,
+        priority,
+        skipOffline: args.skip_offline as boolean | undefined,
+        wakeOffline: args.wake_offline as boolean | undefined,
+      });
 
       if (!wait) {
         // POST /Batch/ScriptExecute is not idempotent. The client already
@@ -270,11 +248,23 @@ async function handleCall(
             EntityIds: computerIds,
           });
         } catch (error) {
-        logScriptExecuteServerError(
+          logScriptExecuteServerError(
             error,
             describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
           );
-          if (!isDroppedConnection(error)) throw error;
+          // Only a dropped connection is left after the shared classifier.
+          const failure = describeLaunchFailure("launch", error);
+          if (failure) {
+            logToolFailure("cwautomate_scripts_execute", error, failure.log);
+            return {
+              ...jsonResult({
+                script_id: scriptId,
+                computer_ids: computerIds,
+                ...failure.body,
+              }),
+              isError: true,
+            };
+          }
           logToolFailure(
             "cwautomate_scripts_execute",
             error,
@@ -296,12 +286,11 @@ async function handleCall(
               ? { execution_id: ambiguous.id }
               : {}),
             message: ambiguous
-              ? `${ambiguous.message} Check cwautomate_scripts_history for each computer before launching again.`
+              ? `${ambiguous.message} ${CHECK_RUNS_GUIDANCE}`
               : "Connection to ConnectWise Automate was interrupted while " +
                 "launching the script. It may or may not have been queued. " +
                 "The request was not retried because a retry can run it " +
-                "twice. Check cwautomate_scripts_history for each computer " +
-                "before launching again.",
+                `twice. ${CHECK_RUNS_GUIDANCE}`,
           });
         }
 
@@ -309,7 +298,8 @@ async function handleCall(
           script_id: scriptId,
           waited: false,
           message:
-            "Script launched. Use cwautomate_scripts_history to read the outcome.",
+            "Script launched. Use cwautomate_scripts_history to read the outcome " +
+            "and cwautomate_scripts_running for runs still queued or running.",
           launch_results: batch.ScriptResults,
           contains_unsuccessful_results: batch.ContainsUnsuccessfulResults,
         });
@@ -317,36 +307,52 @@ async function handleCall(
 
       let results;
       try {
-        results = await client.scripts.runAndWait(computerIds, request, {
+        results = await runScriptsAndWait(client.scripts, request, {
           timeoutMs,
         });
       } catch (error) {
+        const phase = error instanceof ScriptWaitError ? error.phase : "launch";
+        const cause = error instanceof ScriptWaitError ? error.cause : error;
         logScriptExecuteServerError(
-          error,
+          cause,
           describeScriptExecuteRequest({ ...request, EntityIds: computerIds })
         );
-        // runAndWait launches the script and then polls for its result over
-        // several requests. If a transient network failure hits mid-poll,
-        // we genuinely don't know whether the script already launched for
-        // some (or all) targets — retrying could run it a second time, so
-        // report that honestly instead of guessing either way.
-        if (!isDroppedConnection(error)) throw error;
+        // Poll-phase errors never reach here: once the launch is accepted
+        // they are kept per target on the results below.
+        const failure = describeLaunchFailure(phase, cause);
+        if (failure) {
+          logToolFailure("cwautomate_scripts_execute", cause, failure.log);
+          return {
+            ...jsonResult({
+              script_id: scriptId,
+              computer_ids: computerIds,
+              ...failure.body,
+            }),
+            isError: true,
+          };
+        }
+        // Only a non-HTTP error from the pre-launch history read is left
+        // besides a dropped connection; nothing was launched, so surface it.
+        if (!isDroppedConnection(cause)) throw cause;
         logToolFailure(
           "cwautomate_scripts_execute",
-          error,
+          cause,
           "connection to ConnectWise Automate terminated while launching " +
             "the script or polling for its result"
         );
         const guidance =
-          `Connection to ConnectWise Automate was interrupted while ` +
-          `waiting for ${computerIds.length} target(s). The script may ` +
-          `still have launched — check cwautomate_scripts_history for ` +
-          `each computer rather than assuming it failed.`;
+          phase === "baseline"
+            ? `Connection to ConnectWise Automate was interrupted before ` +
+              `the script was launched. This tool made no launch attempt. ` +
+              `Check cwautomate_scripts_history if you need to confirm nothing started.`
+            : `Connection to ConnectWise Automate was interrupted while ` +
+              `waiting for ${computerIds.length} target(s). The script may ` +
+              `still have launched. ${CHECK_RUNS_GUIDANCE}`;
         return jsonResult({
           script_id: scriptId,
           summary:
-            error instanceof ConnectWiseAutomateAmbiguousRequestError
-              ? `${error.message} ${guidance}`
+            cause instanceof ConnectWiseAutomateAmbiguousRequestError
+              ? `${cause.message} ${guidance}`
               : guidance,
           computer_ids: computerIds,
         });
@@ -360,6 +366,10 @@ async function handleCall(
         state: result.state,
         diagnostic_message: result.diagnosticMessage,
         waited_seconds: Math.round(result.waitedMs / 1000),
+        poll_failure: result.pollFailure && {
+          status_code: result.pollFailure.statusCode,
+          automate_message: result.pollFailure.message,
+        },
       }));
 
       const succeeded = runs.filter((r) => r.state === "Success").length;
@@ -368,13 +378,23 @@ async function handleCall(
       ).length;
       const pending = runs.filter((r) => r.launched && !r.completed).length;
 
-      return jsonResult({
-        script_id: scriptId,
-        summary:
-          `${runs.length} target(s): ${succeeded} succeeded, ${failed} failed, ` +
-          `${pending} still running after ${timeoutMs / 1000}s`,
-        runs,
-      });
+      const pollFailed = runs.some((r) => r.poll_failure);
+      const message = pollFailed
+        ? POLL_FAILED_MESSAGE
+        : pending > 0
+          ? STILL_RUNNING_MESSAGE
+          : undefined;
+      return {
+        ...jsonResult({
+          script_id: scriptId,
+          summary:
+            `${runs.length} target(s): ${succeeded} succeeded, ${failed} failed, ` +
+            `${pending} still running after ${timeoutMs / 1000}s`,
+          ...(message ? { message } : {}),
+          runs,
+        }),
+        ...(pollFailed ? { isError: true } : {}),
+      };
     }
 
     case "cwautomate_scripts_history": {
