@@ -722,13 +722,13 @@ describe("Computers Domain Handler", () => {
         mockScriptsExecuteBatch.mockReset().mockRejectedValue(error);
         const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
           computer_id: 1,
-          script_id: 3007,
+          script_id: 202,
         });
         expect(result.isError).toBe(true);
         const data = JSON.parse(result.content[0].text);
         expect(data).toMatchObject({
           computer_id: 1,
-          script_id: 3007,
+          script_id: 202,
           launched: false,
           status_code: 500,
         });
@@ -750,14 +750,14 @@ describe("Computers Domain Handler", () => {
         });
         const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
           computer_id: 1,
-          script_id: 3007,
+          script_id: 202,
         });
         expect(mockScriptsExecuteBatch).toHaveBeenCalledTimes(1);
         expect(result.isError).toBe(true);
         const data = JSON.parse(result.content[0].text);
         expect(data).toMatchObject({
           computer_id: 1,
-          script_id: 3007,
+          script_id: 202,
           launched: true,
           completed: false,
           status_code: 500,
@@ -773,7 +773,7 @@ describe("Computers Domain Handler", () => {
         mockScriptsHistoryForComputer.mockReset().mockRejectedValue(error);
         const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
           computer_id: 1,
-          script_id: 3007,
+          script_id: 202,
         });
         expect(mockScriptsExecuteBatch).not.toHaveBeenCalled();
         expect(result.isError).toBe(true);
@@ -787,7 +787,7 @@ describe("Computers Domain Handler", () => {
         mockScriptsHistoryForComputer.mockReset().mockResolvedValue([]);
         const result = await computersHandler.handleCall("cwautomate_computers_run_script", {
           computer_id: 1,
-          script_id: 3007,
+          script_id: 202,
           timeout_seconds: 0,
         });
         expect(mockScriptsExecuteBatch).toHaveBeenCalledTimes(1);

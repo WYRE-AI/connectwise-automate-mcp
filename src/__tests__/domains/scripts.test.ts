@@ -374,13 +374,13 @@ describe("Scripts Domain Handler", () => {
 
       it("sends a full default ScriptExecute body when priority and flags are omitted", async () => {
         await scriptsHandler.handleCall("cwautomate_scripts_execute", {
-          script_id: 363,
+          script_id: 101,
           computer_ids: [99],
         });
         expect(mockExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [99],
-            ScriptId: 363,
+            ScriptId: 101,
             Parameters: [],
             Priority: 2,
             OfflineActionFlags: {
@@ -401,13 +401,13 @@ describe("Scripts Domain Handler", () => {
         });
         mockExecuteBatch.mockReset().mockRejectedValue(error);
         const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
-          script_id: 363,
+          script_id: 101,
           computer_ids: [99],
         });
         expect(result.isError).toBe(true);
         const data = JSON.parse(result.content[0].text);
         expect(data).toMatchObject({
-          script_id: 363,
+          script_id: 101,
           computer_ids: [99],
           launched: false,
           status_code: 500,
@@ -430,7 +430,7 @@ describe("Scripts Domain Handler", () => {
           throw error;
         });
         const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
-          script_id: 363,
+          script_id: 101,
           computer_ids: [99],
         });
         expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
@@ -456,7 +456,7 @@ describe("Scripts Domain Handler", () => {
         });
         mockHistoryForComputer.mockReset().mockRejectedValue(error);
         const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
-          script_id: 363,
+          script_id: 101,
           computer_ids: [99],
         });
         expect(mockExecuteBatch).not.toHaveBeenCalled();
@@ -482,7 +482,7 @@ describe("Scripts Domain Handler", () => {
           ScriptResults: [{ EntityId: 98, ResultDetails: { ResultStatus: 1, Message: "Insufficient permissions" } }],
         });
         const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
-          script_id: 363,
+          script_id: 101,
           computer_ids: [98, 99],
         });
         const data = JSON.parse(result.content[0].text);
@@ -494,7 +494,7 @@ describe("Scripts Domain Handler", () => {
 
       it("makes no history request after the launch when timeout_seconds is 0", async () => {
         const result = await scriptsHandler.handleCall("cwautomate_scripts_execute", {
-          script_id: 363,
+          script_id: 101,
           computer_ids: [99],
           timeout_seconds: 0,
         });

@@ -11,14 +11,14 @@ import {
   toPriority,
 } from "../utils/script-execute.js";
 
-const now = new Date("2026-11-11T17:37:20.000Z");
+const now = new Date("2026-01-01T00:00:00.000Z");
 
 describe("buildScriptExecuteBatchBody", () => {
   it("serializes the documented run-now defaults", () => {
-    expect(buildScriptExecuteBatchBody({ scriptId: 363, computerIds: [10], now })).toEqual({
+    expect(buildScriptExecuteBatchBody({ scriptId: 101, computerIds: [10], now })).toEqual({
       EntityType: "Computer",
       EntityIds: [10],
-      ScriptId: 363,
+      ScriptId: 101,
       Parameters: [],
       Priority: DEFAULT_SCRIPT_PRIORITY,
       OfflineActionFlags: {
@@ -42,7 +42,7 @@ describe("buildScriptExecuteBatchBody", () => {
     expect(toParameterPairs({ arg1: "value1" })).toEqual([{ Key: "arg1", Value: "value1" }]);
     expect(toParameterPairs(undefined)).toEqual([]);
     const body = buildScriptExecuteBatchBody({
-      scriptId: 3007,
+      scriptId: 202,
       computerIds: [1],
       parameters: { arg1: "value1" },
       priority: "high",
@@ -68,9 +68,9 @@ describe("isAutomateApiError", () => {
 
 describe("runScriptsAndWait", () => {
   const request = buildScriptExecuteBatchBody({
-    scriptId: 363,
+    scriptId: 101,
     computerIds: [10],
-    now: new Date("2026-11-11T17:37:20.000Z"),
+    now: new Date("2026-01-01T00:00:00.000Z"),
   });
 
   it("throws phase launch when the ScriptExecute POST is rejected", async () => {
@@ -150,7 +150,7 @@ describe("runScriptsAndWait", () => {
     };
     const results = await runScriptsAndWait(
       scripts,
-      buildScriptExecuteBatchBody({ scriptId: 363, computerIds: [10, 11] }),
+      buildScriptExecuteBatchBody({ scriptId: 101, computerIds: [10, 11] }),
       { timeoutMs: 20_000 }
     );
     expect(results).toEqual([
@@ -205,7 +205,7 @@ describe("runScriptsAndWait", () => {
         return [
           {
             Id: 44,
-            ScriptId: 363,
+            ScriptId: 101,
             Status: "Completed",
             State: "Success",
             DiagnosticMessage: "ok",
@@ -213,7 +213,7 @@ describe("runScriptsAndWait", () => {
         ];
       },
       executeBatch: async (body: { ScriptId: number; EntityIds: number[] }) => {
-        expect(body.ScriptId).toBe(363);
+        expect(body.ScriptId).toBe(101);
         expect(body.EntityIds).toEqual([10]);
         return { ScriptResults: [], ContainsUnsuccessfulResults: false };
       },
