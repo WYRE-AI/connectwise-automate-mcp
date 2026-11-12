@@ -43,6 +43,7 @@ import {
 import {
   missingParametersToolError,
   resolveScriptParameters,
+  scriptLookupFailedToolError,
 } from "../utils/script-parameters.js";
 
 /**
@@ -498,7 +499,24 @@ async function handleCall(
 
       // Same preflight as cwautomate_scripts_execute: Automate 400s when any
       // declared parameter is omitted, even ones that have defaults.
-      const script = await client.scripts.get(scriptId);
+      // A failed lookup is read-only — report not-launched, not launch-ambiguous.
+      let script;
+      try {
+        script = await client.scripts.get(scriptId);
+      } catch (error) {
+        logToolFailure(
+          "cwautomate_computers_run_script",
+          error,
+          "script parameter lookup failed before launch; no launch was attempted"
+        );
+        return {
+          ...jsonResult({
+            computer_id: computerId,
+            ...scriptLookupFailedToolError(scriptId, error),
+          }),
+          isError: true,
+        };
+      }
       const resolved = resolveScriptParameters(
         script.Parameters,
         args.parameters as Record<string, string> | undefined

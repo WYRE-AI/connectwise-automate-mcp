@@ -727,6 +727,27 @@ describe("Computers Domain Handler", () => {
         });
       });
 
+      it("reports a failed parameter lookup as not launched, not launch-ambiguous", async () => {
+        mockScriptsGet.mockRejectedValue(
+          Object.assign(new Error("Server error: 500"), { statusCode: 500 })
+        );
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_run_script",
+          { computer_id: 1, script_id: 100 }
+        );
+
+        expect(result.isError).toBe(true);
+        expect(mockScriptsExecuteBatch).not.toHaveBeenCalled();
+        expect(JSON.parse(result.content[0].text)).toMatchObject({
+          computer_id: 1,
+          script_id: 100,
+          launched: false,
+          status_code: 500,
+          message: expect.stringContaining("was not launched"),
+        });
+      });
+
       it("fills declared defaults and rejects missing required parameters before launch", async () => {
         mockScriptsGet.mockResolvedValue({
           Id: "100",

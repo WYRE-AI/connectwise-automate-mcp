@@ -149,7 +149,9 @@ export function resolveScriptParameters(
   | { ok: true; value: ResolvedScriptParameters }
   | { ok: false; error: MissingScriptParametersError } {
   const declared = parseDeclaredScriptParameters(rawDeclared);
-  const parameters: Record<string, string> = {};
+  // Null prototype so a declared or caller key named `__proto__` is stored as
+  // a real parameter instead of invoking Object.prototype.__proto__.
+  const parameters: Record<string, string> = Object.create(null);
   const filled_defaults: string[] = [];
   const missing: DeclaredScriptParameter[] = [];
   const usedKeys = new Set<string>();
@@ -226,6 +228,39 @@ export function missingParametersToolError(
         .join(", ") +
       ". Supply them in `parameters`, or inspect declared parameters via " +
       "cwautomate_scripts_get. The script was not launched.",
+  };
+}
+
+/**
+ * Structured tool-error when `GET /Scripts/{id}` fails before any launch.
+ * This is a read-only failure — nothing was sent to ScriptExecute.
+ */
+export function scriptLookupFailedToolError(
+  scriptId: number,
+  cause: unknown
+): Record<string, unknown> {
+  const http: Record<string, unknown> = {};
+  if (
+    typeof cause === "object" &&
+    cause !== null &&
+    "statusCode" in cause &&
+    typeof (cause as { statusCode: unknown }).statusCode === "number" &&
+    (cause as { statusCode: number }).statusCode >= 400
+  ) {
+    http.status_code = (cause as { statusCode: number }).statusCode;
+    const message =
+      "message" in cause && typeof (cause as { message: unknown }).message === "string"
+        ? (cause as { message: string }).message.trim()
+        : "";
+    if (message) http.automate_message = message.slice(0, 500);
+  }
+  return {
+    script_id: scriptId,
+    launched: false,
+    ...http,
+    message:
+      "Could not read the script's declared parameters from Automate before " +
+      "launch, so no launch was attempted. The script was not launched.",
   };
 }
 

@@ -93,4 +93,14 @@ describe("resolveScriptParameters", () => {
       ]).map((p) => p.name)
     ).toEqual(["A", "B"]);
   });
+
+  it("preserves an explicit __proto__ parameter key", () => {
+    const result = resolveScriptParameters(["__proto__=value"], {});
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Object.prototype.hasOwnProperty.call(result.value.parameters, "__proto__")).toBe(
+      true
+    );
+    expect(result.value.parameters.__proto__).toBe("value");
+  });
 });

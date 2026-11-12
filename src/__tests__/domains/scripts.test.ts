@@ -494,6 +494,30 @@ describe("Scripts Domain Handler", () => {
         );
       });
 
+      it("reports a failed parameter lookup as not launched, not launch-ambiguous", async () => {
+        mockScriptsGet.mockRejectedValue(
+          Object.assign(new TypeError("terminated"), { cause: undefined })
+        );
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_execute",
+          { script_id: 1, computer_ids: [1] }
+        );
+
+        expect(result.isError).toBe(true);
+        expect(mockExecuteBatch).not.toHaveBeenCalled();
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({
+          script_id: 1,
+          launched: false,
+        });
+        expect(data.message).toContain("declared parameters");
+        expect(data.message).toContain("was not launched");
+        expect(data.message).not.toContain("may or may not");
+        expect(data.interrupted).toBeUndefined();
+        expect(stderr).toHaveBeenCalled();
+      });
+
       it("returns a clear isError naming missing required parameters without launching", async () => {
         mockScriptsGet.mockResolvedValue({
           Id: "1",
