@@ -40,6 +40,10 @@ import {
   ScriptWaitError,
   STILL_RUNNING_MESSAGE,
 } from "../utils/script-execute.js";
+import {
+  missingParametersToolError,
+  resolveScriptParameters,
+} from "../utils/script-parameters.js";
 
 /**
  * Every result carries the launch execution id for later reads. Unfinished
@@ -213,7 +217,13 @@ function getTools(): Tool[] {
     },
     {
       name: "cwautomate_computers_run_script",
-      description: "Run a script on a specific computer. Uses the same full ScheduleScriptBatchRequest body as cwautomate_scripts_execute (StartDate now, once/run-now schedule, explicit offline flags, priority normal=2).",
+      description:
+        "Run a script on a specific computer. Before launch, looks up the " +
+        "script's declared Parameters, fills defaults, and returns a clear " +
+        "isError naming any missing required parameters (instead of Automate's " +
+        "opaque 400). Always sends the full declared parameter set. Uses the " +
+        "same full ScheduleScriptBatchRequest body as cwautomate_scripts_execute " +
+        "(StartDate now, once/run-now schedule, explicit offline flags, priority normal=2).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -231,7 +241,9 @@ function getTools(): Tool[] {
           },
           parameters: {
             type: "object",
-            description: "Script parameters as key-value pairs",
+            description:
+              "Script parameters as key-value pairs. Declared parameters with " +
+              "defaults are filled automatically; required ones must be supplied.",
             additionalProperties: { type: "string" },
           },
         },
@@ -483,12 +495,28 @@ async function handleCall(
     case "cwautomate_computers_run_script": {
       const computerId = args.computer_id as number;
       const scriptId = args.script_id as number;
-      const parameters = args.parameters as Record<string, string> | undefined;
+
+      // Same preflight as cwautomate_scripts_execute: Automate 400s when any
+      // declared parameter is omitted, even ones that have defaults.
+      const script = await client.scripts.get(scriptId);
+      const resolved = resolveScriptParameters(
+        script.Parameters,
+        args.parameters as Record<string, string> | undefined
+      );
+      if (!resolved.ok) {
+        return {
+          ...jsonResult({
+            computer_id: computerId,
+            ...missingParametersToolError(scriptId, resolved.error),
+          }),
+          isError: true,
+        };
+      }
 
       const request = buildScriptExecuteBatchBody({
         scriptId,
         computerIds: [computerId],
-        parameters,
+        parameters: resolved.value.parameters,
       });
       let result;
       try {

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Fixed
+
+- **Script launches preflight declared parameters before ScriptExecute.** Automate returns HTTP 400 when any of a script's declared `Parameters` are omitted from `POST /Batch/ScriptExecute`, including parameters that have defaults. `cwautomate_scripts_execute` and `cwautomate_computers_run_script` now look up `GET /Scripts/{id}` first, fill defaults from declarations such as `ServiceName=Spooler`, and return a structured `isError` that names any missing required parameters (with type / default details) instead of Automate's opaque 400. The launch body always includes the full declared `{ Key, Value }` set. `cwautomate_scripts_get` still returns Automate's raw `Parameters` strings and now also includes parsed `parameter_details`.
+
 ### Security
 
 - **HTTP MCP auth fails closed (CWE-306).** The HTTP transport used to skip `X-Gateway-S2S` when `CONDUIT_S2S_SECRET` was empty, and gateway mode fell through to `CW_AUTOMATE_*` when credential headers were missing. Startup now exits unless the secret is set to a real value (known placeholders are rejected). `MCP_ALLOW_INSECURE_DEV=1` is local-only: it logs a warning, skips the S2S check, and binds `127.0.0.1` only. A configured secret still honors `MCP_HTTP_HOST`. Gateway mode returns 401 when `X-CWA-Server`, `X-CWA-Client-ID`, `X-CWA-Username`, or `X-CWA-Password` is missing. Compose requires the secret, publishes `127.0.0.1:8080:8080`, and does not inject static vendor credentials.

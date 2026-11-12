@@ -85,12 +85,14 @@ describe("Scripts Domain Handler", () => {
     // ... and so does the v1 `GET /Scripts/{id}` row, which also carries the
     // parameter list. (The v2 ScriptDetail route is not served by every
     // hosted instance, so the tool no longer uses it.)
+    // Default: no declared parameters, so execute tests keep the v2.0.6 body
+    // behaviour unless a case overrides Parameters.
     mockScriptsGet.mockResolvedValue({
       Id: "1",
       Name: "Script 1",
       Comments: "Test script",
       Folder: { Id: "5", Name: "Maintenance" },
-      Parameters: ["%reboot%", "%delay%"],
+      Parameters: [],
     });
     mockRunAndWait.mockResolvedValue([]);
     let launchedScriptId: number | undefined;
@@ -294,7 +296,15 @@ describe("Scripts Domain Handler", () => {
     });
 
     describe("cwautomate_scripts_get", () => {
-      it("should pass the v1 script row through, parameters included", async () => {
+      it("should pass the v1 script row through with parsed parameter_details", async () => {
+        mockScriptsGet.mockResolvedValue({
+          Id: "1",
+          Name: "Script 1",
+          Comments: "Test script",
+          Folder: { Id: "5", Name: "Maintenance" },
+          Parameters: ["%reboot%", "ServiceName=Spooler", "retries:number=3"],
+        });
+
         const result = await scriptsHandler.handleCall(
           "cwautomate_scripts_get",
           {
@@ -308,7 +318,33 @@ describe("Scripts Domain Handler", () => {
         const data = JSON.parse(result.content[0].text);
         expect(data.Id).toBe("1");
         expect(data.Name).toBe("Script 1");
-        expect(data.Parameters).toEqual(["%reboot%", "%delay%"]);
+        expect(data.Parameters).toEqual([
+          "%reboot%",
+          "ServiceName=Spooler",
+          "retries:number=3",
+        ]);
+        expect(data.parameter_details).toEqual([
+          {
+            name: "reboot",
+            raw: "%reboot%",
+            required: true,
+            type: "string",
+          },
+          {
+            name: "ServiceName",
+            raw: "ServiceName=Spooler",
+            defaultValue: "Spooler",
+            required: false,
+            type: "string",
+          },
+          {
+            name: "retries",
+            raw: "retries:number=3",
+            defaultValue: "3",
+            required: false,
+            type: "number",
+          },
+        ]);
         expect(data.Folder).toEqual({ Id: "5", Name: "Maintenance" });
       });
     });
@@ -392,6 +428,7 @@ describe("Scripts Domain Handler", () => {
           skip_offline: true,
         });
 
+        expect(mockScriptsGet).toHaveBeenCalledWith(1);
         expect(mockExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [1, 2],
@@ -414,6 +451,7 @@ describe("Scripts Domain Handler", () => {
           script_id: 101,
           computer_ids: [99],
         });
+        expect(mockScriptsGet).toHaveBeenCalledWith(101);
         expect(mockExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [99],
@@ -429,6 +467,79 @@ describe("Scripts Domain Handler", () => {
             StartDate: expect.stringMatching(/^\d{4}-/),
             Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
         });
+      });
+
+      it("fills declared parameter defaults and always sends the full declared set", async () => {
+        mockScriptsGet.mockResolvedValue({
+          Id: "1",
+          Name: "Restart Service",
+          Parameters: ["ServiceName=Spooler", "Force=false"],
+        });
+
+        await scriptsHandler.handleCall("cwautomate_scripts_execute", {
+          script_id: 1,
+          computer_ids: [1],
+          parameters: { ServiceName: "WinRM" },
+          wait: false,
+        });
+
+        expect(mockExecuteBatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            ScriptId: 1,
+            Parameters: [
+              { Key: "ServiceName", Value: "WinRM" },
+              { Key: "Force", Value: "false" },
+            ],
+          })
+        );
+      });
+
+      it("returns a clear isError naming missing required parameters without launching", async () => {
+        mockScriptsGet.mockResolvedValue({
+          Id: "1",
+          Name: "Restart Service",
+          Parameters: ["ServiceName", "Timeout:number=30", "%path%"],
+        });
+
+        const result = await scriptsHandler.handleCall(
+          "cwautomate_scripts_execute",
+          { script_id: 1, computer_ids: [1], parameters: { Timeout: "60" } }
+        );
+
+        expect(result.isError).toBe(true);
+        expect(mockExecuteBatch).not.toHaveBeenCalled();
+        const data = JSON.parse(result.content[0].text);
+        expect(data).toMatchObject({
+          script_id: 1,
+          launched: false,
+        });
+        expect(data.missing_parameters).toEqual([
+          expect.objectContaining({
+            name: "ServiceName",
+            type: "string",
+            required: true,
+          }),
+          expect.objectContaining({
+            name: "path",
+            type: "string",
+            required: true,
+            raw: "%path%",
+          }),
+        ]);
+        expect(data.declared_parameters).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name: "Timeout",
+              type: "number",
+              required: false,
+              defaultValue: "30",
+            }),
+          ])
+        );
+        expect(data.message).toContain("ServiceName");
+        expect(data.message).toContain("path");
+        expect(data.message).toContain("cwautomate_scripts_get");
+        expect(data.message).toContain("was not launched");
       });
 
       it("returns a structured isError result with an unknown outcome when the launch gets HTTP 500", async () => {

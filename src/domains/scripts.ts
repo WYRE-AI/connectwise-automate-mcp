@@ -33,6 +33,11 @@ import {
   ScriptWaitError,
   STILL_RUNNING_MESSAGE,
 } from "../utils/script-execute.js";
+import {
+  missingParametersToolError,
+  resolveScriptParameters,
+  withParameterDetails,
+} from "../utils/script-parameters.js";
 
 /**
  * Get script domain tools
@@ -69,9 +74,9 @@ function getTools(): Tool[] {
       name: "cwautomate_scripts_get",
       description:
         "Get a script's catalog metadata by ID: its Name, Folder, Comments, " +
-        "the Is*Script kind flags, and the list of Parameters it accepts " +
-        "(useful before cwautomate_scripts_execute). Note the script's Id " +
-        "is a string in this response.",
+        "the Is*Script kind flags, Automate's raw Parameters string list, and " +
+        "parsed parameter_details (name, type, required, default) useful before " +
+        "cwautomate_scripts_execute. Note the script's Id is a string in this response.",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -90,9 +95,12 @@ function getTools(): Tool[] {
         "Automate has no synchronous run, so this schedules the script and " +
         "polls its history until it finishes, returning the per-computer " +
         "outcome and any diagnostic message. Use the computers domain to find " +
-        "computer IDs first. The launch body is a full ScheduleScriptBatchRequest " +
-        "(StartDate now, once/run-now schedule, explicit offline flags, priority " +
-        "default normal=2).",
+        "computer IDs first. Before launch, looks up the script's declared " +
+        "Parameters, fills defaults, and returns a clear isError naming any " +
+        "missing required parameters (instead of Automate's opaque 400). Always " +
+        "sends the full declared parameter set. The launch body is a full " +
+        "ScheduleScriptBatchRequest (StartDate now, once/run-now schedule, " +
+        "explicit offline flags, priority default normal=2).",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -107,7 +115,9 @@ function getTools(): Tool[] {
           },
           parameters: {
             type: "object",
-            description: "Script parameters as key-value pairs",
+            description:
+              "Script parameters as key-value pairs. Declared parameters with " +
+              "defaults are filled automatically; required ones must be supplied.",
             additionalProperties: { type: "string" },
           },
           priority: {
@@ -216,7 +226,7 @@ async function handleCall(
       const scriptId = args.script_id as number;
       const script = await client.scripts.get(scriptId);
 
-      return jsonResult(script);
+      return jsonResult(withParameterDetails(script));
     }
 
     case "cwautomate_scripts_execute": {
@@ -228,10 +238,24 @@ async function handleCall(
         clampWaitSeconds(args.timeout_seconds, DEFAULT_WAIT_SECONDS) *
         1000;
 
+      // Automate 400s when any declared parameter is omitted from the body,
+      // even ones that have defaults. Resolve against GET /Scripts/{id} first.
+      const script = await client.scripts.get(scriptId);
+      const resolved = resolveScriptParameters(
+        script.Parameters,
+        args.parameters as Record<string, string> | undefined
+      );
+      if (!resolved.ok) {
+        return {
+          ...jsonResult(missingParametersToolError(scriptId, resolved.error)),
+          isError: true,
+        };
+      }
+
       const request = buildScriptExecuteBatchBody({
         scriptId,
         computerIds,
-        parameters: args.parameters as Record<string, string> | undefined,
+        parameters: resolved.value.parameters,
         priority,
         skipOffline: args.skip_offline as boolean | undefined,
         wakeOffline: args.wake_offline as boolean | undefined,
