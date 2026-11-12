@@ -9,6 +9,7 @@ import { ConnectWiseAutomateAmbiguousRequestError } from "@wyre-ai/node-connectw
 const {
   mockComputersList,
   mockComputersGet,
+  mockScriptsGet,
   mockScriptsRunAndWait,
   mockScriptsExecuteBatch,
   mockScriptsHistoryForComputer,
@@ -20,6 +21,7 @@ const {
 } = vi.hoisted(() => {
   const mockComputersList = vi.fn();
   const mockComputersGet = vi.fn();
+  const mockScriptsGet = vi.fn();
   const mockScriptsRunAndWait = vi.fn();
   const mockScriptsExecuteBatch = vi.fn();
   const mockScriptsHistoryForComputer = vi.fn();
@@ -38,6 +40,7 @@ const {
       commandExecutions: mockCommandExecutions,
     },
     scripts: {
+      get: mockScriptsGet,
       runAndWait: mockScriptsRunAndWait,
       executeBatch: mockScriptsExecuteBatch,
       historyForComputer: mockScriptsHistoryForComputer,
@@ -47,6 +50,7 @@ const {
   return {
     mockComputersList,
     mockComputersGet,
+    mockScriptsGet,
     mockScriptsRunAndWait,
     mockScriptsExecuteBatch,
     mockScriptsHistoryForComputer,
@@ -84,6 +88,7 @@ describe("Computers Domain Handler", () => {
     stderr.mockClear();
     mockComputersList.mockClear();
     mockComputersGet.mockClear();
+    mockScriptsGet.mockClear();
     mockScriptsRunAndWait.mockClear();
     mockScriptsExecuteBatch.mockClear();
     mockScriptsHistoryForComputer.mockClear();
@@ -103,6 +108,8 @@ describe("Computers Domain Handler", () => {
       ComputerName: "Computer 1",
       Client: { Id: 5, Name: "Client 5" },
     });
+    // Scripts with no declared parameters keep the pre-v2.0.7 execute path.
+    mockScriptsGet.mockResolvedValue({ Id: "100", Name: "Script 100", Parameters: [] });
     mockScriptsRunAndWait.mockResolvedValue([
       {
         computerId: 1,
@@ -702,6 +709,7 @@ describe("Computers Domain Handler", () => {
           parameters: { arg1: "value1" },
         });
 
+        expect(mockScriptsGet).toHaveBeenCalledWith(100);
         expect(mockScriptsExecuteBatch).toHaveBeenCalledWith({
             EntityType: "Computer",
             EntityIds: [1],
@@ -717,6 +725,63 @@ describe("Computers Domain Handler", () => {
             StartDate: expect.stringMatching(/^\d{4}-/),
             Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
         });
+      });
+
+      it("reports a failed parameter lookup as not launched, not launch-ambiguous", async () => {
+        mockScriptsGet.mockRejectedValue(
+          Object.assign(new Error("Server error: 500"), { statusCode: 500 })
+        );
+
+        const result = await computersHandler.handleCall(
+          "cwautomate_computers_run_script",
+          { computer_id: 1, script_id: 100 }
+        );
+
+        expect(result.isError).toBe(true);
+        expect(mockScriptsExecuteBatch).not.toHaveBeenCalled();
+        expect(JSON.parse(result.content[0].text)).toMatchObject({
+          computer_id: 1,
+          script_id: 100,
+          launched: false,
+          status_code: 500,
+          message: expect.stringContaining("was not launched"),
+        });
+      });
+
+      it("fills declared defaults and rejects missing required parameters before launch", async () => {
+        mockScriptsGet.mockResolvedValue({
+          Id: "100",
+          Name: "Restart Service",
+          Parameters: ["ServiceName=Spooler", "Target"],
+        });
+
+        const missing = await computersHandler.handleCall(
+          "cwautomate_computers_run_script",
+          { computer_id: 1, script_id: 100 }
+        );
+        expect(missing.isError).toBe(true);
+        expect(mockScriptsExecuteBatch).not.toHaveBeenCalled();
+        expect(JSON.parse(missing.content[0].text)).toMatchObject({
+          computer_id: 1,
+          script_id: 100,
+          launched: false,
+          missing_parameters: [expect.objectContaining({ name: "Target" })],
+        });
+
+        mockScriptsExecuteBatch.mockClear();
+        await computersHandler.handleCall("cwautomate_computers_run_script", {
+          computer_id: 1,
+          script_id: 100,
+          parameters: { Target: "host-a" },
+        });
+        expect(mockScriptsExecuteBatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            Parameters: [
+              { Key: "ServiceName", Value: "Spooler" },
+              { Key: "Target", Value: "host-a" },
+            ],
+          })
+        );
       });
 
       it("should report a clear, honest result instead of a raw connection error when waiting is interrupted", async () => {
