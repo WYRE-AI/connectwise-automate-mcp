@@ -46,10 +46,19 @@ export interface ScriptExecuteToolInput {
   wakeOffline?: boolean;
 }
 
+/**
+ * SDK launch request with a required numeric `ScriptId`. Completion polling
+ * matches `ScriptHistory` rows by numeric `ScriptId`, so a GUID-only launch
+ * could never match and would always report incomplete at the deadline.
+ */
+export type ScriptLaunchRequest = ScriptExecuteBatchRequest & {
+  ScriptId: number;
+};
+
 /** Map MCP tool args to the SDK `ScriptExecuteBatchRequest` (public API shape). */
 export function buildScriptLaunchRequest(
   input: ScriptExecuteToolInput
-): ScriptExecuteBatchRequest {
+): ScriptLaunchRequest {
   return {
     EntityType: "Computer",
     EntityIds: input.computerIds,
@@ -248,7 +257,7 @@ const defaultDelay = (ms: number) =>
  */
 export async function runScriptsAndWait(
   scripts: ScriptLaunchClient,
-  request: ScriptExecuteBatchRequest,
+  request: ScriptLaunchRequest,
   options: RunScriptsWaitOptions = {}
 ): Promise<ScriptRunWaitResult[]> {
   const timeoutMs = options.timeoutMs ?? 120_000;
