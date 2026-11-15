@@ -1,22 +1,20 @@
 /**
- * Shared ScheduleScriptBatchRequest builder for both script launch tools.
+ * Shared script launch helpers for both script launch tools.
  *
- * Field names match the official Automate swagger
- * (`Automate.Api.Domain.Contracts.BatchScripts.ScheduleScriptBatchRequest`).
- * Mirrors `@wyre-ai/node-connectwise-automate` `buildScriptExecuteBatchBody`
- * (node-connectwise-automate#114). The current SDK still spreads
- * the request into POST /Batch/ScriptExecute, so these explicit fields go
- * out even before the MCP bumps to that SDK release.
- *
- * Prod logs showed a sparse body (no Parameters, Priority, StartDate or
- * Schedule, and for cwautomate_scripts_execute an empty OfflineActionFlags)
- * caused Automate HTTP 500 "Encountered unhandled exception." on both tools.
+ * Launch bodies are built by `@wyre-ai/node-connectwise-automate`
+ * `buildScriptExecuteBatchBody` (POST /Batch/ScriptSchedule). MCP tools accept
+ * the historical priority names (high=1, normal=2, low=3) and map them into the
+ * SDK request before `executeBatch` / `runScriptsAndWait`.
  */
 
+import type { ScriptExecuteBatchRequest } from "@wyre-ai/node-connectwise-automate";
 import { isDroppedConnection, isTransientNetworkError } from "./network-errors.js";
 
-export const DEFAULT_SCRIPT_PRIORITY = 2;
-export const SCRIPT_SCHEDULE_FREQUENCY_ONCE = 1;
+export {
+  buildScriptExecuteBatchBody,
+  DEFAULT_SCRIPT_PRIORITY,
+  SCRIPT_SCHEDULE_FREQUENCY_ONCE,
+} from "@wyre-ai/node-connectwise-automate";
 
 export type ScriptPriorityName = "low" | "normal" | "high";
 
@@ -28,7 +26,7 @@ export function toPriority(priority?: ScriptPriorityName): number {
     case "low":
       return 3;
     default:
-      return DEFAULT_SCRIPT_PRIORITY;
+      return 2;
   }
 }
 
@@ -46,30 +44,12 @@ export interface ScriptExecuteToolInput {
   priority?: ScriptPriorityName;
   skipOffline?: boolean;
   wakeOffline?: boolean;
-  now?: Date;
 }
 
-export interface ScriptExecuteBatchBody {
-  EntityType: "Computer";
-  EntityIds: number[];
-  ScriptId: number;
-  Parameters: { Key: string; Value: string }[];
-  Priority: number;
-  OfflineActionFlags: {
-    SkipsOfflineAgents: boolean;
-    WakesOfflineAgents: boolean;
-    OnlyRunsOnOfflineAgents: boolean;
-  };
-  UseAgentTime: boolean;
-  StartDate: string;
-  Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: number } };
-}
-
-/** Build the full request both tools pass to executeBatch / runScriptsAndWait. */
-export function buildScriptExecuteBatchBody(
+/** Map MCP tool args to the SDK `ScriptExecuteBatchRequest` (public API shape). */
+export function buildScriptLaunchRequest(
   input: ScriptExecuteToolInput
-): ScriptExecuteBatchBody {
-  const now = input.now ?? new Date();
+): ScriptExecuteBatchRequest {
   return {
     EntityType: "Computer",
     EntityIds: input.computerIds,
@@ -79,14 +59,6 @@ export function buildScriptExecuteBatchBody(
     OfflineActionFlags: {
       SkipsOfflineAgents: input.skipOffline ?? false,
       WakesOfflineAgents: input.wakeOffline ?? false,
-      OnlyRunsOnOfflineAgents: false,
-    },
-    UseAgentTime: false,
-    StartDate: now.toISOString(),
-    Schedule: {
-      ScriptScheduleFrequency: {
-        ScriptScheduleFrequencyId: SCRIPT_SCHEDULE_FREQUENCY_ONCE,
-      },
     },
   };
 }
@@ -236,7 +208,7 @@ export interface ScriptExecuteBatchResponse {
 }
 
 export interface ScriptLaunchClient {
-  executeBatch: (request: ScriptExecuteBatchBody) => Promise<ScriptExecuteBatchResponse>;
+  executeBatch: (request: ScriptExecuteBatchRequest) => Promise<ScriptExecuteBatchResponse>;
   historyForComputer: (
     computerId: number,
     params?: { orderBy?: string; pageSize?: number }
@@ -276,7 +248,7 @@ const defaultDelay = (ms: number) =>
  */
 export async function runScriptsAndWait(
   scripts: ScriptLaunchClient,
-  request: ScriptExecuteBatchBody,
+  request: ScriptExecuteBatchRequest,
   options: RunScriptsWaitOptions = {}
 ): Promise<ScriptRunWaitResult[]> {
   const timeoutMs = options.timeoutMs ?? 120_000;
@@ -284,6 +256,7 @@ export async function runScriptsAndWait(
     options.pollIntervalMs ?? DEFAULT_SCRIPT_POLL_INTERVAL_MS;
   const delay = options.delay ?? defaultDelay;
   const computerIds = request.EntityIds;
+  const scriptId = request.ScriptId;
   const recentHistory = (computerId: number) =>
     scripts.historyForComputer(computerId, SCRIPT_HISTORY_WINDOW);
 
@@ -339,7 +312,7 @@ export async function runScriptsAndWait(
         const match = history.find(
           (entry) =>
             !seen.has(entry.Id) &&
-            entry.ScriptId === request.ScriptId &&
+            entry.ScriptId === scriptId &&
             entry.Status === "Completed"
         );
         if (!match) return undefined;

@@ -83,7 +83,7 @@ describe("CallTool catch-all", () => {
   it("surfaces an ambiguous POST failure with the client's message", async () => {
     mockScriptsGet.mockRejectedValue(
       new ConnectWiseAutomateAmbiguousRequestError(
-        "Connection interrupted during POST /cwa/api/v1/Batch/ScriptExecute. The command may or may not have been queued. The request was not retried because a retry can run it twice.",
+        "Connection interrupted during POST /cwa/api/v1/Batch/ScriptSchedule. The command may or may not have been queued. The request was not retried because a retry can run it twice.",
         { cause: new TypeError("terminated"), id: 99 }
       )
     );

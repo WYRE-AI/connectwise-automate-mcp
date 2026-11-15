@@ -7,17 +7,17 @@
  *   - `"ServiceName=Spooler"`   → optional; default "Spooler"
  *
  * Names may appear wrapped as `%name%` or `@name@` in catalog rows; the
- * ScriptExecute body uses the bare name as `Key`. Automate's swagger does not
+ * ScriptSchedule body uses the bare name as `Key`. Automate's swagger does not
  * expose a separate type field on these strings, so `type` is reported as
  * `"string"` unless the declaration itself carries a recognizable hint.
  *
- * Automate rejects ScriptExecute with HTTP 400 when a declared parameter is
+ * Automate rejects script launch with HTTP 400 when a declared parameter is
  * omitted from the body, even when it has a default — so launches must always
  * send the full declared set as `{ Key, Value }` pairs.
  */
 
 export interface DeclaredScriptParameter {
-  /** Bare parameter name used as ScriptExecute `Key`. */
+  /** Bare parameter name used as the launch body `Key`. */
   name: string;
   /** Original catalog string from Automate. */
   raw: string;
@@ -34,7 +34,7 @@ export interface DeclaredScriptParameter {
 }
 
 export interface ResolvedScriptParameters {
-  /** Values to send on ScriptExecute, keyed by bare parameter name. */
+  /** Values to send on script launch, keyed by bare parameter name. */
   parameters: Record<string, string>;
   /** Declared parameters after parsing (declaration order). */
   declared: DeclaredScriptParameter[];
@@ -233,7 +233,7 @@ export function missingParametersToolError(
 
 /**
  * Structured tool-error when `GET /Scripts/{id}` fails before any launch.
- * This is a read-only failure — nothing was sent to ScriptExecute.
+ * This is a read-only failure — nothing was sent to Automate.
  */
 export function scriptLookupFailedToolError(
   scriptId: number,

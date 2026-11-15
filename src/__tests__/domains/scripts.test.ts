@@ -430,42 +430,34 @@ describe("Scripts Domain Handler", () => {
 
         expect(mockScriptsGet).toHaveBeenCalledWith(1);
         expect(mockExecuteBatch).toHaveBeenCalledWith({
-            EntityType: "Computer",
-            EntityIds: [1, 2],
-            ScriptId: 1,
-            Parameters: [{ Key: "arg1", Value: "value1" }],
-            Priority: 1,
-            OfflineActionFlags: {
-              SkipsOfflineAgents: true,
-              WakesOfflineAgents: false,
-              OnlyRunsOnOfflineAgents: false,
-            },
-            UseAgentTime: false,
-            StartDate: expect.stringMatching(/^\d{4}-/),
-            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
+          EntityType: "Computer",
+          EntityIds: [1, 2],
+          ScriptId: 1,
+          Parameters: [{ Key: "arg1", Value: "value1" }],
+          Priority: 1,
+          OfflineActionFlags: {
+            SkipsOfflineAgents: true,
+            WakesOfflineAgents: false,
+          },
         });
       });
 
-      it("sends a full default ScriptExecute body when priority and flags are omitted", async () => {
+      it("sends the SDK launch request when priority and flags are omitted", async () => {
         await scriptsHandler.handleCall("cwautomate_scripts_execute", {
           script_id: 101,
           computer_ids: [99],
         });
         expect(mockScriptsGet).toHaveBeenCalledWith(101);
         expect(mockExecuteBatch).toHaveBeenCalledWith({
-            EntityType: "Computer",
-            EntityIds: [99],
-            ScriptId: 101,
-            Parameters: [],
-            Priority: 2,
-            OfflineActionFlags: {
-              SkipsOfflineAgents: false,
-              WakesOfflineAgents: false,
-              OnlyRunsOnOfflineAgents: false,
-            },
-            UseAgentTime: false,
-            StartDate: expect.stringMatching(/^\d{4}-/),
-            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
+          EntityType: "Computer",
+          EntityIds: [99],
+          ScriptId: 101,
+          Parameters: [],
+          Priority: 2,
+          OfflineActionFlags: {
+            SkipsOfflineAgents: false,
+            WakesOfflineAgents: false,
+          },
         });
       });
 
@@ -772,10 +764,10 @@ describe("Scripts Domain Handler", () => {
         expect(mockExecuteBatch).toHaveBeenCalledTimes(1);
       });
 
-      it("does not retry POST /Batch/ScriptExecute when the launch is ambiguous", async () => {
+      it("does not retry POST /Batch/ScriptSchedule when the launch is ambiguous", async () => {
         mockExecuteBatch.mockRejectedValue(
           new ConnectWiseAutomateAmbiguousRequestError(
-            "Connection interrupted during POST /cwa/api/v1/Batch/ScriptExecute. The command may or may not have been queued (script id 1, entity ids 1). The request was not retried because a retry can run it twice.",
+            "Connection interrupted during POST /cwa/api/v1/Batch/ScriptSchedule. The command may or may not have been queued (script id 1, entity ids 1). The request was not retried because a retry can run it twice.",
             { cause: new TypeError("terminated"), id: 77 }
           )
         );
