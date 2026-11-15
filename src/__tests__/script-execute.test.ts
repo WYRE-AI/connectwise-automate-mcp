@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildScriptExecuteBatchBody,
   DEFAULT_SCRIPT_PRIORITY,
   SCRIPT_SCHEDULE_FREQUENCY_ONCE,
+} from "@wyre-ai/node-connectwise-automate";
+import {
   SCRIPT_HISTORY_WINDOW,
   automateMessage,
-  buildScriptExecuteBatchBody,
+  buildScriptLaunchRequest,
   describeLaunchFailure,
   isAutomateApiError,
   runScriptsAndWait,
@@ -14,25 +17,19 @@ import {
 
 const now = new Date("2026-01-01T00:00:00.000Z");
 
-describe("buildScriptExecuteBatchBody", () => {
-  it("serializes the documented run-now defaults", () => {
-    expect(buildScriptExecuteBatchBody({ scriptId: 101, computerIds: [10], now })).toEqual({
+describe("buildScriptLaunchRequest", () => {
+  it("maps tool inputs onto the SDK request (public API shape)", () => {
+    expect(buildScriptLaunchRequest({ scriptId: 101, computerIds: [10] })).toEqual({
       EntityType: "Computer",
       EntityIds: [10],
       ScriptId: 101,
       Parameters: [],
-      Priority: DEFAULT_SCRIPT_PRIORITY,
+      Priority: 2,
       OfflineActionFlags: {
         SkipsOfflineAgents: false,
         WakesOfflineAgents: false,
-        OnlyRunsOnOfflineAgents: false,
       },
-      UseAgentTime: false,
-      StartDate: now.toISOString(),
-      Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: SCRIPT_SCHEDULE_FREQUENCY_ONCE } },
     });
-    expect(DEFAULT_SCRIPT_PRIORITY).toBe(2);
-    expect(SCRIPT_SCHEDULE_FREQUENCY_ONCE).toBe(1);
   });
 
   it("maps priority names onto 1/2/3 and parameter objects onto Key/Value pairs", () => {
@@ -42,18 +39,37 @@ describe("buildScriptExecuteBatchBody", () => {
     expect(toPriority(undefined)).toBe(2);
     expect(toParameterPairs({ arg1: "value1" })).toEqual([{ Key: "arg1", Value: "value1" }]);
     expect(toParameterPairs(undefined)).toEqual([]);
-    const body = buildScriptExecuteBatchBody({
+    const body = buildScriptLaunchRequest({
       scriptId: 202,
       computerIds: [1],
       parameters: { arg1: "value1" },
       priority: "high",
       skipOffline: true,
-      now,
     });
     expect(body.Priority).toBe(1);
     expect(body.Parameters).toEqual([{ Key: "arg1", Value: "value1" }]);
-    expect(body.OfflineActionFlags.SkipsOfflineAgents).toBe(true);
-    expect(body.OfflineActionFlags.WakesOfflineAgents).toBe(false);
+    expect(body.OfflineActionFlags?.SkipsOfflineAgents).toBe(true);
+    expect(body.OfflineActionFlags?.WakesOfflineAgents).toBe(false);
+  });
+});
+
+describe("buildScriptExecuteBatchBody (SDK)", () => {
+  it("serializes the Control Center ScriptSchedule wire shape", () => {
+  const launch = buildScriptLaunchRequest({ scriptId: 101, computerIds: [10] });
+    expect(buildScriptExecuteBatchBody(launch, now)).toMatchObject({
+      EntityType: 1,
+      EntityIds: ["10"],
+      ScriptId: "101",
+      Parameters: [],
+      Priority: 2,
+      OfflineActionFlags: { SkipsOfflineAgents: false, WakesOfflineAgents: false },
+      UseAgentTime: false,
+      Schedule: {
+        ScriptScheduleFrequency: { ScriptScheduleFrequencyId: SCRIPT_SCHEDULE_FREQUENCY_ONCE },
+      },
+    });
+    expect(DEFAULT_SCRIPT_PRIORITY).toBe(12);
+    expect(SCRIPT_SCHEDULE_FREQUENCY_ONCE).toBe(1);
   });
 });
 
@@ -107,13 +123,12 @@ describe("describeLaunchFailure", () => {
 });
 
 describe("runScriptsAndWait", () => {
-  const request = buildScriptExecuteBatchBody({
+  const request = buildScriptLaunchRequest({
     scriptId: 101,
     computerIds: [10],
-    now: new Date("2026-01-01T00:00:00.000Z"),
   });
 
-  it("throws phase launch when the ScriptExecute POST is rejected", async () => {
+  it("throws phase launch when the ScriptSchedule POST is rejected", async () => {
     const error = Object.assign(new Error("Encountered unhandled exception."), { statusCode: 500 });
     const scripts = {
       historyForComputer: async () => [],
@@ -190,7 +205,7 @@ describe("runScriptsAndWait", () => {
     };
     const results = await runScriptsAndWait(
       scripts,
-      buildScriptExecuteBatchBody({ scriptId: 101, computerIds: [10, 11] }),
+      buildScriptLaunchRequest({ scriptId: 101, computerIds: [10, 11] }),
       { timeoutMs: 20_000 }
     );
     expect(results).toEqual([
@@ -214,7 +229,7 @@ describe("runScriptsAndWait", () => {
     };
     const results = await runScriptsAndWait(
       scripts,
-      buildScriptExecuteBatchBody({ scriptId: 101, computerIds: [10, 11] }),
+      buildScriptLaunchRequest({ scriptId: 101, computerIds: [10, 11] }),
       { timeoutMs: 20_000 }
     );
     expect(results).toEqual([
@@ -263,7 +278,7 @@ describe("runScriptsAndWait", () => {
           },
         ];
       },
-      executeBatch: async (body: { ScriptId: number; EntityIds: number[] }) => {
+      executeBatch: async (body: { ScriptId?: number; EntityIds: number[] }) => {
         expect(body.ScriptId).toBe(101);
         expect(body.EntityIds).toEqual([10]);
         return { ScriptResults: [], ContainsUnsuccessfulResults: false };

@@ -661,19 +661,15 @@ describe("Computers Domain Handler", () => {
         expect(data.completed).toBe(true);
         expect(data.state).toBe("Success");
         expect(mockScriptsExecuteBatch).toHaveBeenCalledWith({
-            EntityType: "Computer",
-            EntityIds: [1],
-            ScriptId: 100,
-            Parameters: [],
-            Priority: 2,
-            OfflineActionFlags: {
-              SkipsOfflineAgents: false,
-              WakesOfflineAgents: false,
-              OnlyRunsOnOfflineAgents: false,
-            },
-            UseAgentTime: false,
-            StartDate: expect.stringMatching(/^\d{4}-/),
-            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
+          EntityType: "Computer",
+          EntityIds: [1],
+          ScriptId: 100,
+          Parameters: [],
+          Priority: 2,
+          OfflineActionFlags: {
+            SkipsOfflineAgents: false,
+            WakesOfflineAgents: false,
+          },
         });
       });
 
@@ -711,19 +707,15 @@ describe("Computers Domain Handler", () => {
 
         expect(mockScriptsGet).toHaveBeenCalledWith(100);
         expect(mockScriptsExecuteBatch).toHaveBeenCalledWith({
-            EntityType: "Computer",
-            EntityIds: [1],
-            ScriptId: 100,
-            Parameters: [{ Key: "arg1", Value: "value1" }],
-            Priority: 2,
-            OfflineActionFlags: {
-              SkipsOfflineAgents: false,
-              WakesOfflineAgents: false,
-              OnlyRunsOnOfflineAgents: false,
-            },
-            UseAgentTime: false,
-            StartDate: expect.stringMatching(/^\d{4}-/),
-            Schedule: { ScriptScheduleFrequency: { ScriptScheduleFrequencyId: 1 } },
+          EntityType: "Computer",
+          EntityIds: [1],
+          ScriptId: 100,
+          Parameters: [{ Key: "arg1", Value: "value1" }],
+          Priority: 2,
+          OfflineActionFlags: {
+            SkipsOfflineAgents: false,
+            WakesOfflineAgents: false,
+          },
         });
       });
 

@@ -25,7 +25,7 @@ import {
   logToolFailure,
 } from "../utils/log.js";
 import {
-  buildScriptExecuteBatchBody,
+  buildScriptLaunchRequest,
   CHECK_RUNS_GUIDANCE,
   describeLaunchFailure,
   POLL_FAILED_MESSAGE,
@@ -267,7 +267,7 @@ async function handleCall(
         };
       }
 
-      const request = buildScriptExecuteBatchBody({
+      const request = buildScriptLaunchRequest({
         scriptId,
         computerIds,
         parameters: resolved.value.parameters,
@@ -277,15 +277,12 @@ async function handleCall(
       });
 
       if (!wait) {
-        // POST /Batch/ScriptExecute is not idempotent. The client already
+        // POST /Batch/ScriptSchedule is not idempotent. The client already
         // refuses to retry POST; retrying here can run the script twice when
         // the first request reached Automate and only the response was lost.
         let batch;
         try {
-          batch = await client.scripts.executeBatch({
-            ...request,
-            EntityIds: computerIds,
-          });
+          batch = await client.scripts.executeBatch(request);
         } catch (error) {
           logScriptExecuteServerError(
             error,

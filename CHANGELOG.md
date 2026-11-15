@@ -1,8 +1,12 @@
 ## [Unreleased]
 
+### Changed
+
+- **Bump `@wyre-ai/node-connectwise-automate` to 4.0.4 (WYREAI-573).** Script launches now go through the SDK's `POST /Batch/ScriptSchedule` path ([node-connectwise-automate#116](https://github.com/WYRE-AI/node-connectwise-automate/pull/116)). `cwautomate_scripts_execute` and `cwautomate_computers_run_script` build a `ScriptExecuteBatchRequest` via `buildScriptLaunchRequest` and delegate wire formatting to the SDK's `buildScriptExecuteBatchBody`. MCP tool signatures are unchanged. Requires SDK 4.0.4 on GitHub Packages (publish after node-connectwise-automate#116 merges).
+
 ### Fixed
 
-- **Script launches preflight declared parameters before ScriptExecute.** Automate returns HTTP 400 when any of a script's declared `Parameters` are omitted from `POST /Batch/ScriptExecute`, including parameters that have defaults. `cwautomate_scripts_execute` and `cwautomate_computers_run_script` now look up `GET /Scripts/{id}` first, fill defaults from declarations such as `ServiceName=Spooler`, and return a structured `isError` that names any missing required parameters (with type / default details) instead of Automate's opaque 400. The launch body always includes the full declared `{ Key, Value }` set. `cwautomate_scripts_get` still returns Automate's raw `Parameters` strings and now also includes parsed `parameter_details`.
+- **Script launches preflight declared parameters before launch.** Automate returns HTTP 400 when any of a script's declared `Parameters` are omitted from the script launch body, including parameters that have defaults. `cwautomate_scripts_execute` and `cwautomate_computers_run_script` now look up `GET /Scripts/{id}` first, fill defaults from declarations such as `ServiceName=Spooler`, and return a structured `isError` that names any missing required parameters (with type / default details) instead of Automate's opaque 400. The launch body always includes the full declared `{ Key, Value }` set. `cwautomate_scripts_get` still returns Automate's raw `Parameters` strings and now also includes parsed `parameter_details`.
 
 ### Security
 

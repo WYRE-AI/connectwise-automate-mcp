@@ -52,7 +52,7 @@ describe("isTransientNetworkError", () => {
 
   it("treats an ambiguous POST error as transient when its cause is a socket drop", () => {
     const error = new ConnectWiseAutomateAmbiguousRequestError(
-      "Connection interrupted during POST /Batch/ScriptExecute.",
+      "Connection interrupted during POST /Batch/ScriptSchedule.",
       { cause: new TypeError("terminated") }
     );
     expect(isTransientNetworkError(error)).toBe(true);

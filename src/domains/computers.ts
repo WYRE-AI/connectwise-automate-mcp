@@ -32,7 +32,7 @@ import {
   logToolFailure,
 } from "../utils/log.js";
 import {
-  buildScriptExecuteBatchBody,
+  buildScriptLaunchRequest,
   CHECK_RUNS_GUIDANCE,
   describeLaunchFailure,
   POLL_FAILED_MESSAGE,
@@ -531,7 +531,7 @@ async function handleCall(
         };
       }
 
-      const request = buildScriptExecuteBatchBody({
+      const request = buildScriptLaunchRequest({
         scriptId,
         computerIds: [computerId],
         parameters: resolved.value.parameters,
