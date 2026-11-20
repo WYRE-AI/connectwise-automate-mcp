@@ -28,7 +28,9 @@ import {
   buildScriptLaunchRequest,
   CHECK_RUNS_GUIDANCE,
   describeLaunchFailure,
+  EMPTY_LAUNCH_REPLY_ERROR,
   POLL_FAILED_MESSAGE,
+  refusedLaunchResults,
   runScriptsAndWait,
   ScriptWaitError,
   STILL_RUNNING_MESSAGE,
@@ -330,11 +332,33 @@ async function handleCall(
           });
         }
 
+        // A 2xx `null` body is not a refusal, but it does not confirm a launch.
+        if (!batch) {
+          const failure = describeLaunchFailure("launch", EMPTY_LAUNCH_REPLY_ERROR);
+          logToolFailure("cwautomate_scripts_execute", EMPTY_LAUNCH_REPLY_ERROR, failure!.log);
+          return {
+            ...jsonResult({
+              script_id: scriptId,
+              computer_ids: computerIds,
+              ...failure!.body,
+            }),
+            isError: true,
+          };
+        }
+
+        const refused = refusedLaunchResults(batch).length;
+        const launchedCount = computerIds.length - refused;
         return jsonResult({
           script_id: scriptId,
           waited: false,
           message:
-            "Script launched. Use cwautomate_scripts_history to read the outcome " +
+            (launchedCount <= 0
+              ? "Script not launched: Automate refused every target (see launch_results)."
+              : refused > 0
+                ? `Script launched on ${launchedCount} of ${computerIds.length} target(s); ` +
+                  "Automate refused the rest (see launch_results)."
+                : "Script launched.") +
+            " Use cwautomate_scripts_history to read the outcome " +
             "and cwautomate_scripts_running for runs still queued or running.",
           launch_results: batch.ScriptResults,
           contains_unsuccessful_results: batch.ContainsUnsuccessfulResults,
@@ -412,7 +436,10 @@ async function handleCall(
       const failed = runs.filter(
         (r) => !r.launched || r.state === "Failure"
       ).length;
-      const pending = runs.filter((r) => r.launched && !r.completed).length;
+      const pollFailures = runs.filter((r) => r.poll_failure).length;
+      const pending = runs.filter(
+        (r) => r.launched && !r.completed && !r.poll_failure
+      ).length;
 
       const pollFailed = runs.some((r) => r.poll_failure);
       const message = pollFailed
@@ -425,7 +452,10 @@ async function handleCall(
           script_id: scriptId,
           summary:
             `${runs.length} target(s): ${succeeded} succeeded, ${failed} failed, ` +
-            `${pending} still running after ${timeoutMs / 1000}s`,
+            `${pending} still running after ${timeoutMs / 1000}s` +
+            (pollFailures > 0
+              ? `, ${pollFailures} with unreadable history (outcome unknown)`
+              : ""),
           ...(message ? { message } : {}),
           runs,
         }),

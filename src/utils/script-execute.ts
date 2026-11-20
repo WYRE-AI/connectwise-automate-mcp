@@ -216,6 +216,19 @@ export interface ScriptExecuteBatchResponse {
   ContainsUnsuccessfulResults?: boolean;
 }
 
+/** Automate answered 2xx with a JSON `null` (or nothing readable) for the launch. */
+export const EMPTY_LAUNCH_REPLY_ERROR = new Error(
+  "Automate returned an empty reply to the launch request"
+);
+
+/** Per-computer results Automate refused in an accepted launch, by EntityId. */
+export function refusedLaunchResults(batch: ScriptExecuteBatchResponse) {
+  if (!batch.ContainsUnsuccessfulResults) return [];
+  return (batch.ScriptResults ?? []).filter(
+    (result) => (result.ResultDetails?.ResultStatus ?? 0) !== 0
+  );
+}
+
 export interface ScriptLaunchClient {
   executeBatch: (request: ScriptExecuteBatchRequest) => Promise<ScriptExecuteBatchResponse>;
   historyForComputer: (
@@ -287,13 +300,11 @@ export async function runScriptsAndWait(
   } catch (error) {
     throw new ScriptWaitError("launch", error);
   }
+  // A 2xx `null` body parses fine but says nothing about whether it launched.
+  if (!batch) throw new ScriptWaitError("launch", EMPTY_LAUNCH_REPLY_ERROR);
 
   const refusals = new Map(
-    batch.ContainsUnsuccessfulResults
-      ? (batch.ScriptResults ?? [])
-          .filter((result) => (result.ResultDetails?.ResultStatus ?? 0) !== 0)
-          .map((result) => [result.EntityId, result] as const)
-      : []
+    refusedLaunchResults(batch).map((result) => [result.EntityId, result] as const)
   );
 
   const startedAt = Date.now();
