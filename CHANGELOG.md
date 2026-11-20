@@ -6,6 +6,12 @@
 
 ### Fixed
 
+- **The HTTP transport no longer exits on a malformed request (WYREAI-741).** The request
+  target was parsed against the client-supplied `Host` header, and a value that does not parse
+  (or a target such as `//`) threw inside the request listener before authentication. The
+  target is now parsed against a fixed base, so `Host` is no longer consulted, and a target
+  that still cannot be parsed gets a `400` JSON response while the server keeps running.
+
 - **Script launch follow-ups from the v2.0.6 body fix (WYREAI-742).** A 2xx reply whose JSON body is `null` no longer throws on `ScriptResults`; the launch is reported as `launched: "unknown"` (with do-not-relaunch guidance) on both the `wait: false` and waiting paths. The `cwautomate_scripts_execute` summary no longer counts a target whose history poll failed as "still running"; it reports it separately as "with unreadable history (outcome unknown)". The `wait: false` message no longer says "Script launched." when Automate refused every target; it says the script was not launched, or how many targets it launched when only some were refused.
 - **Script launches preflight declared parameters before launch.** Automate returns HTTP 400 when any of a script's declared `Parameters` are omitted from the script launch body, including parameters that have defaults. `cwautomate_scripts_execute` and `cwautomate_computers_run_script` now look up `GET /Scripts/{id}` first, fill defaults from declarations such as `ServiceName=Spooler`, and return a structured `isError` that names any missing required parameters (with type / default details) instead of Automate's opaque 400. The launch body always includes the full declared `{ Key, Value }` set. `cwautomate_scripts_get` still returns Automate's raw `Parameters` strings and now also includes parsed `parameter_details`.
 
